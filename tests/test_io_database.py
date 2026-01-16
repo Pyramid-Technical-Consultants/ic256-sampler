@@ -252,3 +252,234 @@ class TestIODatabaseIntegration:
             print(f"    Count: {channel_stats['count']}")
             print(f"    Rate: {channel_stats['rate']:.2f} points/second")
             print(f"    Time Span: {channel_stats['time_span']:.3f} seconds")
+
+
+class TestIODatabaseEdgeCases:
+    """Comprehensive edge case tests for IODatabase."""
+    
+    def test_many_points_same_timestamp(self):
+        """Test IODatabase with many points at the same timestamp."""
+        db = IODatabase()
+        channel_path = "/test/channel"
+        
+        base_timestamp = 1000000000000000000
+        
+        # Add 1000 points all at the same timestamp
+        for i in range(1000):
+            db.add_data_point(channel_path, i, base_timestamp)
+        
+        channel_data = db.get_channel(channel_path)
+        assert channel_data.count == 1000
+        assert channel_data.first_timestamp == base_timestamp
+        assert channel_data.last_timestamp == base_timestamp
+        
+        # All points should have elapsed_time = 0.0
+        points = list(channel_data.data_points)
+        for point in points:
+            assert abs(point.elapsed_time - 0.0) < 1e-9, \
+                f"Point should have elapsed_time = 0.0, got {point.elapsed_time}"
+    
+    def test_points_very_close_timestamps(self):
+        """Test IODatabase with points at very close timestamps (nanoseconds apart)."""
+        db = IODatabase()
+        channel_path = "/test/channel"
+        
+        base_timestamp = 1000000000000000000
+        
+        # Add points 1 nanosecond apart
+        for i in range(100):
+            db.add_data_point(channel_path, i, base_timestamp + i)
+        
+        channel_data = db.get_channel(channel_path)
+        assert channel_data.count == 100
+        
+        # All points should have elapsed_time very close to 0.0
+        points = list(channel_data.data_points)
+        for point in points:
+            # Elapsed time should be in nanoseconds (very small)
+            assert point.elapsed_time < 1e-6, \
+                f"Point should have elapsed_time < 1e-6, got {point.elapsed_time}"
+    
+    def test_rapid_data_arrival(self):
+        """Test IODatabase with rapid data arrival (simulating device burst)."""
+        db = IODatabase()
+        channel_path = "/test/channel"
+        
+        base_timestamp = 1000000000000000000
+        
+        # Simulate rapid arrival: 100 points in 1ms
+        for i in range(100):
+            timestamp = base_timestamp + int(i * 0.00001 * 1e9)  # 0.01ms apart
+            db.add_data_point(channel_path, i, timestamp)
+        
+        channel_data = db.get_channel(channel_path)
+        assert channel_data.count == 100
+        
+        # Time span should be very small (< 1ms)
+        stats = db.get_statistics()
+        channel_stats = stats['channels'][channel_path]
+        assert channel_stats['time_span'] < 0.001, \
+            f"Time span should be < 1ms, got {channel_stats['time_span']}"
+    
+    def test_mixed_timestamp_patterns(self):
+        """Test IODatabase with mixed timestamp patterns (bursts and continuous)."""
+        db = IODatabase()
+        channel_path = "/test/channel"
+        
+        base_timestamp = 1000000000000000000
+        
+        # Burst 1: 10 points at t=0
+        for i in range(10):
+            db.add_data_point(channel_path, i, base_timestamp)
+        
+        # Continuous: 50 points over 1 second
+        for i in range(50):
+            db.add_data_point(channel_path, 10 + i, base_timestamp + int(i * 0.02 * 1e9))
+        
+        # Burst 2: 20 points at t=1s
+        for i in range(20):
+            db.add_data_point(channel_path, 60 + i, base_timestamp + int(1e9))
+        
+        channel_data = db.get_channel(channel_path)
+        assert channel_data.count == 80
+        
+        # Verify time span
+        stats = db.get_statistics()
+        channel_stats = stats['channels'][channel_path]
+        assert channel_stats['time_span'] >= 1.0, \
+            f"Time span should be >= 1s, got {channel_stats['time_span']}"
+    
+    def test_elapsed_time_calculation_consistency(self):
+        """Test that elapsed_time is calculated consistently across channels."""
+        db = IODatabase()
+        channel1 = "/test/channel1"
+        channel2 = "/test/channel2"
+        
+        base_timestamp = 1000000000000000000
+        
+        # Add points to both channels at same timestamps
+        for i in range(10):
+            timestamp = base_timestamp + int(i * 0.1 * 1e9)  # 0.1s apart
+            db.add_data_point(channel1, i, timestamp)
+            db.add_data_point(channel2, i * 10, timestamp)
+        
+        # Both channels should have same elapsed_time values
+        ch1_data = db.get_channel(channel1)
+        ch2_data = db.get_channel(channel2)
+        
+        ch1_points = list(ch1_data.data_points)
+        ch2_points = list(ch2_data.data_points)
+        
+        assert len(ch1_points) == len(ch2_points)
+        
+        for p1, p2 in zip(ch1_points, ch2_points):
+            assert abs(p1.elapsed_time - p2.elapsed_time) < 1e-9, \
+                f"Elapsed times should match. Ch1: {p1.elapsed_time}, Ch2: {p2.elapsed_time}"
+    
+    def test_clear_and_rebuild(self):
+        """Test clearing IODatabase and rebuilding with new data."""
+        db = IODatabase()
+        channel_path = "/test/channel"
+        
+        base_timestamp = 1000000000000000000
+        
+        # Add initial data
+        for i in range(10):
+            db.add_data_point(channel_path, i, base_timestamp + int(i * 0.1 * 1e9))
+        
+        assert db.get_total_count() == 10
+        
+        # Clear
+        db.clear()
+        assert db.get_total_count() == 0
+        assert db.global_first_timestamp is None
+        
+        # Add new data
+        new_base = base_timestamp + int(10e9)  # 10 seconds later
+        for i in range(20):
+            db.add_data_point(channel_path, i, new_base + int(i * 0.1 * 1e9))
+        
+        assert db.get_total_count() == 20
+        
+        # New data should have elapsed_time starting from 0.0 again
+        channel_data = db.get_channel(channel_path)
+        first_point = channel_data.data_points[0]
+        assert abs(first_point.elapsed_time - 0.0) < 1e-9, \
+            f"First point after clear should have elapsed_time = 0.0, got {first_point.elapsed_time}"
+    
+    def test_large_dataset_performance(self):
+        """Test IODatabase performance with large dataset."""
+        db = IODatabase()
+        channel_path = "/test/channel"
+        
+        base_timestamp = 1000000000000000000
+        
+        # Add 10,000 points
+        import time
+        start_time = time.time()
+        for i in range(10000):
+            db.add_data_point(channel_path, i, base_timestamp + int(i * 0.001 * 1e9))
+        add_time = time.time() - start_time
+        
+        # Should complete in reasonable time (< 1 second)
+        assert add_time < 1.0, f"Adding 10k points took {add_time:.2f}s, should be < 1s"
+        
+        # Query performance
+        start_time = time.time()
+        points = db.get_channel(channel_path).get_points_in_range(1.0, 2.0)
+        query_time = time.time() - start_time
+        
+        # Should query quickly (< 0.1 second)
+        assert query_time < 0.1, f"Query took {query_time:.2f}s, should be < 0.1s"
+        
+        assert len(points) > 0
+    
+    def test_concurrent_channel_addition(self):
+        """Test adding data to multiple channels concurrently (simulated)."""
+        db = IODatabase()
+        channels = [f"/test/channel{i}" for i in range(10)]
+        
+        base_timestamp = 1000000000000000000
+        
+        # Add data to all channels
+        for i in range(100):
+            for channel in channels:
+                db.add_data_point(channel, i, base_timestamp + int(i * 0.01 * 1e9))
+        
+        # All channels should have data
+        for channel in channels:
+            assert db.get_channel_count(channel) == 100
+        
+        # Total count should be correct
+        assert db.get_total_count() == 1000  # 10 channels * 100 points
+    
+    def test_get_statistics_with_empty_channels(self):
+        """Test get_statistics() with empty channels."""
+        db = IODatabase()
+        
+        # Add channels but no data
+        db.add_channel("/test/channel1")
+        db.add_channel("/test/channel2")
+        
+        stats = db.get_statistics()
+        assert stats['total_channels'] == 2
+        assert stats['total_data_points'] == 0
+    
+    def test_get_data_at_time_with_gaps(self):
+        """Test get_data_at_time() when there are gaps in data."""
+        db = IODatabase()
+        channel_path = "/test/channel"
+        
+        base_timestamp = 1000000000000000000
+        
+        # Add points with gaps
+        db.add_data_point(channel_path, 100, base_timestamp)  # t=0
+        db.add_data_point(channel_path, 200, base_timestamp + int(1e9))  # t=1s
+        db.add_data_point(channel_path, 300, base_timestamp + int(3e9))  # t=3s (gap from 1s to 3s)
+        
+        # Query at t=2s (in the gap)
+        data = db.get_data_at_time(2.0, tolerance=0.5)
+        # Should return None or closest point
+        assert channel_path in data
+        # May return None if no point within tolerance, or closest point
+        assert data[channel_path] is None or data[channel_path].value in [200, 300]

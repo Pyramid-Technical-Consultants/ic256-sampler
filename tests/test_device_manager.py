@@ -662,3 +662,428 @@ class TestDeviceManagerRealDeviceIntegration:
         
         # Cleanup
         device_manager.close_all_connections()
+    
+    @pytest.mark.integration
+    def test_device_manager_collects_thousands_of_data_points(self, ic256_ip):
+        """Integration test: Verify DeviceManager can collect thousands of data points.
+        
+        This comprehensive test verifies that:
+        1. DeviceManager can collect data continuously over an extended period
+        2. IODatabase correctly stores thousands of data points
+        3. Data collection rate is consistent and matches expected sampling rate
+        4. All channels receive data
+        5. Data points have correct timestamps and elapsed_time values
+        
+        This test requires:
+        - A live IC256 device at the IP in config.json
+        - Network connectivity to that device
+        - Sufficient time to collect thousands of points (10+ seconds)
+        """
+        from ic256_sampler.utils import is_valid_device, is_valid_ipv4
+        
+        # Skip if IP is invalid
+        if not is_valid_ipv4(ic256_ip):
+            pytest.skip(f"Invalid IP address in config: {ic256_ip}")
+        
+        # Verify device is reachable
+        if not is_valid_device(ic256_ip, "IC256"):
+            pytest.skip(f"IC256 device at {ic256_ip} is not reachable or not responding")
+        
+        # Test parameters
+        sampling_rate = 500  # 500 Hz
+        collection_duration = 10.0  # 10 seconds
+        expected_min_points_per_channel = int(sampling_rate * collection_duration * 0.7)  # 70% tolerance for startup/shutdown
+        expected_min_total_points = expected_min_points_per_channel * 5  # At least 5 channels should have data
+        
+        # Create DeviceManager
+        device_manager = DeviceManager()
+        stop_event = threading.Event()
+        device_manager.stop_event = stop_event
+        
+        # Add device
+        success = device_manager.add_device(IC256_CONFIG, ic256_ip, sampling_rate=sampling_rate)
+        assert success, "Device should be added successfully"
+        
+        # Verify connection exists
+        assert "IC256-42/35" in device_manager.connections, "IC256 device connection should be established"
+        connection = device_manager.connections["IC256-42/35"]
+        assert connection.ip_address == ic256_ip, f"Connection should use correct IP: {ic256_ip}"
+        
+        # Get initial database state
+        initial_stats = device_manager.io_database.get_statistics()
+        initial_total_points = initial_stats.get('total_data_points', 0)
+        initial_channels = set(device_manager.io_database.get_all_channels())
+        
+        print(f"\nDeviceManager Large Dataset Collection Test:")
+        print(f"  Sampling Rate: {sampling_rate} Hz")
+        print(f"  Collection Duration: {collection_duration} seconds")
+        print(f"  Expected Min Points: {expected_min_total_points}")
+        print(f"  Initial Points: {initial_total_points}")
+        print(f"  Initial Channels: {len(initial_channels)}")
+        
+        # Start data collection
+        start_time = time.time()
+        device_manager.start()
+        
+        # Verify device manager is running
+        assert device_manager._running is True, "DeviceManager should be running"
+        assert not stop_event.is_set(), "stop_event should not be set"
+        
+        # Verify collection thread is alive
+        with device_manager._lock:
+            assert connection.thread is not None, "Collection thread should exist"
+            assert connection.thread.is_alive(), "Collection thread should be alive"
+        
+        # Monitor data collection over time
+        check_intervals = [2.0, 5.0, 8.0, collection_duration]  # Check at 2s, 5s, 8s, and final
+        points_at_intervals = []
+        channels_at_intervals = []
+        
+        for check_time in check_intervals:
+            elapsed = time.time() - start_time
+            if elapsed < check_time:
+                time.sleep(check_time - elapsed)
+            
+            stats = device_manager.io_database.get_statistics()
+            total_points = stats.get('total_data_points', 0)
+            all_channels = set(device_manager.io_database.get_all_channels())
+            
+            points_at_intervals.append(total_points)
+            channels_at_intervals.append(len(all_channels))
+            
+            print(f"  After {check_time:.1f}s: {total_points} points, {len(all_channels)} channels")
+            
+            # Verify data is accumulating
+            if check_time > 1.0:  # After first second
+                assert total_points > initial_total_points, \
+                    f"Data should be accumulating. Initial: {initial_total_points}, Current: {total_points}"
+        
+        # Get final statistics
+        final_stats = device_manager.io_database.get_statistics()
+        final_total_points = final_stats.get('total_data_points', 0)
+        final_channels = set(device_manager.io_database.get_all_channels())
+        
+        print(f"  Final: {final_total_points} points, {len(final_channels)} channels")
+        
+        # Stop collection
+        stop_event.set()
+        device_manager.stop()
+        
+        # Wait for threads to finish
+        with device_manager._lock:
+            if connection.thread.is_alive():
+                connection.thread.join(timeout=5.0)
+        
+        # Verify final data count
+        assert final_total_points >= expected_min_total_points, \
+            f"Expected at least {expected_min_total_points} total data points in {collection_duration}s. " \
+            f"Got: {final_total_points}. " \
+            f"This may indicate data collection is not working properly."
+        
+        # Verify multiple channels have data
+        assert len(final_channels) >= 5, \
+            f"Expected at least 5 channels with data. Got: {len(final_channels)} channels. " \
+            f"Channels: {final_channels}"
+        
+        # Verify data accumulation was continuous (points should increase over time)
+        assert points_at_intervals[-1] > points_at_intervals[0], \
+            f"Points should accumulate over time. Started: {points_at_intervals[0]}, Ended: {points_at_intervals[-1]}"
+        
+        # Verify data accumulation rate is reasonable
+        # Points should increase roughly linearly with time
+        if len(points_at_intervals) >= 2:
+            rate_2s = (points_at_intervals[1] - points_at_intervals[0]) / 2.0 if len(points_at_intervals) > 1 else 0
+            rate_final = (points_at_intervals[-1] - points_at_intervals[0]) / check_intervals[-1]
+            
+            print(f"  Collection Rate (first 2s): {rate_2s:.1f} points/sec")
+            print(f"  Collection Rate (overall): {rate_final:.1f} points/sec")
+            
+            # Rate should be reasonable (at least 100 points/sec for 500 Hz with multiple channels)
+            assert rate_final >= 100, \
+                f"Collection rate should be at least 100 points/sec. Got: {rate_final:.1f} points/sec"
+        
+        # Verify each channel has substantial data
+        channels_with_sufficient_data = []
+        for channel_path in final_channels:
+            channel_count = device_manager.io_database.get_channel_count(channel_path)
+            if channel_count >= expected_min_points_per_channel:
+                channels_with_sufficient_data.append(channel_path)
+            
+            channel_data = device_manager.io_database.get_channel(channel_path)
+            assert channel_data is not None, f"Channel {channel_path} should exist"
+            assert channel_data.count == channel_count, "Channel count should match"
+            assert channel_data.first_timestamp is not None, f"Channel {channel_path} should have first timestamp"
+            assert channel_data.last_timestamp is not None, f"Channel {channel_path} should have last timestamp"
+            assert channel_data.last_timestamp >= channel_data.first_timestamp, \
+                f"Channel {channel_path} last timestamp should be >= first timestamp"
+        
+        print(f"  Channels with sufficient data ({expected_min_points_per_channel}+ points): {len(channels_with_sufficient_data)}")
+        
+        # At least some channels should have sufficient data
+        assert len(channels_with_sufficient_data) >= 3, \
+            f"Expected at least 3 channels with {expected_min_points_per_channel}+ points. " \
+            f"Got: {len(channels_with_sufficient_data)}. " \
+            f"Channels with data: {channels_with_sufficient_data}"
+        
+        # Verify elapsed_time calculation is correct
+        # Check a few channels to ensure elapsed_time is calculated correctly
+        for channel_path in list(final_channels)[:3]:  # Check first 3 channels
+            channel_data = device_manager.io_database.get_channel(channel_path)
+            points = list(channel_data.data_points)
+            
+            if len(points) >= 2:
+                # First point should have elapsed_time = 0.0 (or very close)
+                assert abs(points[0].elapsed_time - 0.0) < 1e-6, \
+                    f"First point in {channel_path} should have elapsed_time ≈ 0.0, got {points[0].elapsed_time}"
+                
+                # Elapsed times should be monotonically increasing
+                for i in range(1, min(100, len(points))):  # Check first 100 points
+                    assert points[i].elapsed_time >= points[i-1].elapsed_time, \
+                        f"Elapsed times should be monotonic. Point {i-1}: {points[i-1].elapsed_time}, " \
+                        f"Point {i}: {points[i].elapsed_time}"
+                
+                # Last point should have reasonable elapsed_time (close to collection duration)
+                last_elapsed = points[-1].elapsed_time
+                assert last_elapsed >= collection_duration * 0.5, \
+                    f"Last point elapsed_time should be at least {collection_duration * 0.5}s. " \
+                    f"Got: {last_elapsed}s"
+                assert last_elapsed <= collection_duration * 1.5, \
+                    f"Last point elapsed_time should be at most {collection_duration * 1.5}s. " \
+                    f"Got: {last_elapsed}s"
+        
+        # Verify data point timestamps are reasonable
+        # All timestamps should be within a reasonable range
+        global_first = device_manager.io_database.global_first_timestamp
+        assert global_first is not None, "Global first timestamp should be set"
+        
+        for channel_path in list(final_channels)[:3]:  # Check first 3 channels
+            channel_data = device_manager.io_database.get_channel(channel_path)
+            points = list(channel_data.data_points)
+            
+            # Get channel's first timestamp and global first timestamp
+            channel_first = channel_data.first_timestamp
+            assert channel_first is not None, f"Channel {channel_path} should have first timestamp"
+            
+            # elapsed_time is calculated relative to global_first_timestamp (not channel_first)
+            # This is how IODatabase.add_data_point() works - it uses global_first_timestamp as reference
+            global_first = device_manager.io_database.global_first_timestamp
+            assert global_first is not None, "Global first timestamp should be set"
+            
+            for i, point in enumerate(points[:100]):  # Check first 100 points
+                # Timestamp should be >= channel's first timestamp
+                assert point.timestamp_ns >= channel_first, \
+                    f"Point timestamp {point.timestamp_ns} should be >= channel_first {channel_first}"
+                
+                # For the first point in a channel, elapsed_time is 0.0 because ChannelData.add_point()
+                # sets reference_timestamp = timestamp_ns for the first point, ignoring global_first_timestamp.
+                # For subsequent points, elapsed_time is relative to global_first_timestamp.
+                if i == 0:
+                    # First point should have elapsed_time = 0.0
+                    assert abs(point.elapsed_time - 0.0) < 1e-6, \
+                        f"First point in channel should have elapsed_time = 0.0, got {point.elapsed_time}"
+                else:
+                    # Subsequent points should use global_first_timestamp as reference
+                    expected_elapsed = (point.timestamp_ns - global_first) / 1e9
+                    assert abs(point.elapsed_time - expected_elapsed) < 1e-6, \
+                        f"Elapsed time {point.elapsed_time} should match timestamp difference from global_first {expected_elapsed}"
+        
+        # Print detailed statistics
+        print(f"\nDetailed Statistics:")
+        print(f"  Total Data Points: {final_total_points}")
+        print(f"  Total Channels: {len(final_channels)}")
+        print(f"  Global First Timestamp: {global_first}")
+        
+        for channel_path in sorted(final_channels)[:10]:  # Print first 10 channels
+            channel_data = device_manager.io_database.get_channel(channel_path)
+            channel_stats = final_stats['channels'].get(channel_path, {})
+            print(f"  {channel_path}:")
+            print(f"    Count: {channel_data.count}")
+            print(f"    Time Span: {channel_stats.get('time_span', 0):.3f}s")
+            print(f"    Rate: {channel_stats.get('rate', 0):.1f} points/sec")
+        
+        # Cleanup
+        device_manager.close_all_connections()
+    
+    @pytest.mark.integration
+    def test_device_manager_to_virtual_database_creates_thousands_of_rows(self, ic256_ip):
+        """Integration test: Verify full pipeline DeviceManager -> IODatabase -> VirtualDatabase.
+        
+        This comprehensive test verifies the complete data flow:
+        1. DeviceManager collects data from real device into IODatabase
+        2. IODatabase stores thousands of data points
+        3. VirtualDatabase builds thousands of rows from IODatabase data
+        
+        This test requires:
+        - A live IC256 device at the IP in config.json
+        - Network connectivity to that device
+        - Sufficient time to collect thousands of points and create thousands of rows (10+ seconds)
+        """
+        from ic256_sampler.utils import is_valid_device, is_valid_ipv4
+        from ic256_sampler.ic256_model import IC256Model
+        from ic256_sampler.virtual_database import VirtualDatabase
+        
+        # Skip if IP is invalid
+        if not is_valid_ipv4(ic256_ip):
+            pytest.skip(f"Invalid IP address in config: {ic256_ip}")
+        
+        # Verify device is reachable
+        if not is_valid_device(ic256_ip, "IC256"):
+            pytest.skip(f"IC256 device at {ic256_ip} is not reachable or not responding")
+        
+        # Test parameters
+        sampling_rate = 500  # 500 Hz
+        collection_duration = 10.0  # 10 seconds
+        expected_min_rows = int(sampling_rate * collection_duration * 0.7)  # 70% tolerance for startup/shutdown
+        expected_min_io_points = expected_min_rows * 5  # At least 5 channels should have data
+        
+        print(f"\nDeviceManager -> IODatabase -> VirtualDatabase Pipeline Test:")
+        print(f"  Sampling Rate: {sampling_rate} Hz")
+        print(f"  Collection Duration: {collection_duration} seconds")
+        print(f"  Expected Min IODatabase Points: {expected_min_io_points}")
+        print(f"  Expected Min VirtualDatabase Rows: {expected_min_rows}")
+        
+        # Step 1: Collect data using DeviceManager into IODatabase
+        device_manager = DeviceManager()
+        stop_event = threading.Event()
+        device_manager.stop_event = stop_event
+        
+        # Add device
+        success = device_manager.add_device(IC256_CONFIG, ic256_ip, sampling_rate=sampling_rate)
+        assert success, "Device should be added successfully"
+        
+        # Verify connection exists
+        assert "IC256-42/35" in device_manager.connections, "IC256 device connection should be established"
+        connection = device_manager.connections["IC256-42/35"]
+        
+        # Get IODatabase
+        io_database = device_manager.get_io_database()
+        
+        # Get initial state
+        initial_stats = io_database.get_statistics()
+        initial_total_points = initial_stats.get('total_data_points', 0)
+        
+        # Start data collection
+        start_time = time.time()
+        device_manager.start()
+        
+        # Verify device manager is running
+        assert device_manager._running is True, "DeviceManager should be running"
+        
+        # Monitor data collection
+        print(f"  Collecting data for {collection_duration} seconds...")
+        time.sleep(collection_duration)
+        
+        # Get IODatabase statistics
+        io_stats = io_database.get_statistics()
+        io_total_points = io_stats.get('total_data_points', 0)
+        io_channels = set(io_database.get_all_channels())
+        
+        print(f"  IODatabase: {io_total_points} points, {len(io_channels)} channels")
+        
+        # Stop collection
+        stop_event.set()
+        device_manager.stop()
+        
+        # Wait for threads to finish
+        with device_manager._lock:
+            if connection.thread.is_alive():
+                connection.thread.join(timeout=5.0)
+        
+        # Verify IODatabase has thousands of points
+        assert io_total_points >= expected_min_io_points, \
+            f"IODatabase should have at least {expected_min_io_points} points. Got: {io_total_points}"
+        
+        assert len(io_channels) >= 5, \
+            f"IODatabase should have at least 5 channels. Got: {len(io_channels)}"
+        
+        # Step 2: Build VirtualDatabase from IODatabase
+        print(f"  Building VirtualDatabase from IODatabase...")
+        
+        model = IC256Model()
+        reference_channel = model.get_reference_channel()
+        columns = model.create_columns(reference_channel)
+        
+        virtual_db = VirtualDatabase(
+            io_database=io_database,
+            reference_channel=reference_channel,
+            sampling_rate=sampling_rate,
+            columns=columns,
+        )
+        
+        # Build virtual database
+        virtual_db.build()
+        
+        # Get VirtualDatabase statistics
+        virtual_stats = virtual_db.get_statistics()
+        virtual_row_count = virtual_db.get_row_count()
+        
+        print(f"  VirtualDatabase: {virtual_row_count} rows")
+        print(f"  Time Span: {virtual_stats.get('time_span', 0):.3f} seconds")
+        print(f"  Expected Rows: {virtual_stats.get('expected_rows', 0)}")
+        print(f"  Actual Rows: {virtual_stats.get('actual_rows', 0)}")
+        
+        # Verify VirtualDatabase has thousands of rows
+        assert virtual_row_count >= expected_min_rows, \
+            f"VirtualDatabase should have at least {expected_min_rows} rows. Got: {virtual_row_count}. " \
+            f"This indicates VirtualDatabase.build() is not creating rows from IODatabase data properly."
+        
+        # Verify row count is reasonable (should be close to expected for the time span)
+        expected_rows = virtual_stats.get('expected_rows', 0)
+        if expected_rows > 0:
+            # Allow 20% tolerance for timing variations
+            assert virtual_row_count >= int(expected_rows * 0.8), \
+                f"VirtualDatabase row count {virtual_row_count} should be at least 80% of expected {expected_rows}"
+            assert virtual_row_count <= int(expected_rows * 1.2), \
+                f"VirtualDatabase row count {virtual_row_count} should be at most 120% of expected {expected_rows}"
+        
+        # Verify rows have data
+        rows = virtual_db.get_rows()
+        assert len(rows) == virtual_row_count, "Row count should match get_rows() length"
+        assert len(rows) > 0, "Should have rows"
+        
+        # Verify first and last rows have reasonable timestamps
+        first_row = rows[0]
+        last_row = rows[-1]
+        
+        assert first_row.timestamp >= 0.0, f"First row timestamp should be >= 0.0, got {first_row.timestamp}"
+        assert last_row.timestamp > first_row.timestamp, \
+            f"Last row timestamp {last_row.timestamp} should be > first row timestamp {first_row.timestamp}"
+        
+        # Verify time span is reasonable
+        time_span = last_row.timestamp - first_row.timestamp
+        assert time_span >= collection_duration * 0.7, \
+            f"Time span {time_span}s should be at least 70% of collection duration {collection_duration}s"
+        assert time_span <= collection_duration * 1.3, \
+            f"Time span {time_span}s should be at most 130% of collection duration {collection_duration}s"
+        
+        # Verify rows have data in them
+        # Check first 10 and last 10 rows
+        for i, row in enumerate(rows[:10]):
+            assert len(row.data) > 0, f"Row {i} should have data"
+            # At least some columns should have non-None values
+            non_none_count = sum(1 for v in row.data.values() if v is not None)
+            assert non_none_count > 0, f"Row {i} should have at least one non-None value"
+        
+        for i, row in enumerate(rows[-10:], len(rows) - 10):
+            assert len(row.data) > 0, f"Row {i} should have data"
+            non_none_count = sum(1 for v in row.data.values() if v is not None)
+            assert non_none_count > 0, f"Row {i} should have at least one non-None value"
+        
+        # Verify row spacing is correct (should be approximately 1/sampling_rate)
+        row_interval = 1.0 / sampling_rate
+        for i in range(1, min(100, len(rows))):  # Check first 100 rows
+            time_diff = rows[i].timestamp - rows[i-1].timestamp
+            # Allow 5% tolerance for floating point and timing variations
+            assert abs(time_diff - row_interval) < row_interval * 0.05, \
+                f"Row {i} spacing {time_diff} should be approximately {row_interval} (got {abs(time_diff - row_interval)} difference)"
+        
+        # Print summary
+        print(f"\nPipeline Test Summary:")
+        print(f"  IODatabase Points: {io_total_points}")
+        print(f"  IODatabase Channels: {len(io_channels)}")
+        print(f"  VirtualDatabase Rows: {virtual_row_count}")
+        print(f"  VirtualDatabase Time Span: {time_span:.3f}s")
+        print(f"  Row Spacing: {row_interval:.4f}s (expected: {1.0/sampling_rate:.4f}s)")
+        
+        # Cleanup
+        device_manager.close_all_connections()

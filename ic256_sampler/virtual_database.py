@@ -1338,8 +1338,10 @@ class VirtualDatabase:
         Will not create rows until all channels have at least one data point (primed).
         """
         # Use cached reference channel if available, otherwise get it
-        if self._ref_channel_cache is None:
-            self._ref_channel_cache = self.io_database.get_channel(self.reference_channel)
+        # CRITICAL: Always refresh cache to get latest channel data
+        # This handles the case where IODatabase was cleared - the cache might point to old (empty) channel
+        # By always getting fresh reference, we ensure we're using the current channel state
+        self._ref_channel_cache = self.io_database.get_channel(self.reference_channel)
         ref_channel = self._ref_channel_cache
         
         if not ref_channel or ref_channel.count == 0:
@@ -1369,10 +1371,6 @@ class VirtualDatabase:
         # The previous priming check here was causing rebuilds to stop if any channel
         # temporarily had no data, which prevented new rows from being created.
         
-        # If no new data, skip (with small tolerance for floating point)
-        if last_elapsed <= self._last_built_time + 1e-9:
-            return
-        
         # Calculate row interval
         row_interval = 1.0 / self.sampling_rate
         
@@ -1380,6 +1378,24 @@ class VirtualDatabase:
         # Since _last_built_time is the timestamp of the last row built,
         # we simply add row_interval to get the next row time
         start_time = self._last_built_time + row_interval
+        
+        # If there's not enough new data to create at least one more row, skip
+        # We need at least one row_interval worth of new data beyond the last built time
+        # However, if we have significantly more data points than rows, we should create more rows
+        # even if the time hasn't advanced much (handles case where data arrives in bursts)
+        if last_elapsed < start_time - 1e-9:
+            # Check if we have many more data points than rows - if so, create rows based on point count
+            current_point_count = ref_channel.count
+            current_row_count = len(self.rows)
+            # If we have at least 2x more points than rows, create rows even if time hasn't advanced
+            # This handles the case where multiple data points arrive at the same timestamp
+            if current_point_count > current_row_count * 2:
+                # Extend last_elapsed to allow creating more rows
+                # Estimate how many rows we should have based on point count
+                estimated_rows = min(current_point_count, int(current_point_count * 0.1))  # Conservative estimate
+                last_elapsed = max(last_elapsed, start_time + (estimated_rows - current_row_count) * row_interval)
+            else:
+                return
         
         # Pre-compute snapshots for incremental rebuild (similar to build)
         # This avoids repeated deque-to-list conversions during the rebuild loop

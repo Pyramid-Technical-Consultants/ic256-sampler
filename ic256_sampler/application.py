@@ -445,7 +445,35 @@ class Application:
             with device_manager._lock:
                 connection = device_manager.connections[device_name]
                 # Update sampling rate
-                connection.model.setup_device(connection.client, sampling_rate)
+                try:
+                    connection.model.setup_device(connection.client, sampling_rate)
+                    # CRITICAL: setup_device() calls sendSubscribeFields() which REPLACES
+                    # the subscribedFields dictionary with only frequency fields, losing
+                    # all data channel subscriptions. We must re-subscribe to data channels.
+                    connection.client.sendSubscribeFields({
+                        field: True for field in connection.channels.values()
+                    })
+                except (ConnectionAbortedError, ConnectionResetError, OSError) as e:
+                    # Connection error during setup - log and try to reconnect
+                    error_msg = f"Connection error setting up {device_name}: {e}"
+                    log_message_safe(self.window, error_msg, "ERROR")
+                    print(f"Warning: {error_msg}")
+                    # Try to reconnect
+                    try:
+                        connection.client.reconnect()
+                        # Retry setup after reconnect
+                        connection.model.setup_device(connection.client, sampling_rate)
+                        # CRITICAL: After reconnect, we must re-subscribe to data channels
+                        # The reconnect creates a new websocket, so all subscriptions are lost
+                        connection.client.sendSubscribeFields({
+                            field: True for field in connection.channels.values()
+                        })
+                    except Exception as retry_error:
+                        # Reconnect failed - skip this device
+                        error_msg = f"Failed to reconnect {device_name}: {retry_error}"
+                        log_message_safe(self.window, error_msg, "ERROR")
+                        print(f"Error: {error_msg}")
+                        continue  # Skip this device
                 
                 # Ensure old thread is stopped before creating new one
                 if connection.thread.is_alive():

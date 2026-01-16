@@ -919,3 +919,533 @@ class TestDataCollectionPipeline:
         # Stop
         stop_event.set()
         device_manager.stop()
+
+    @pytest.mark.integration
+    def test_collect_data_with_model_loop(self, ic256_ip, tmp_path):
+        """Test the collect_data_with_model() function loop.
+        
+        This tests the actual loop that runs in the application,
+        which calls collect_iteration() repeatedly.
+        """
+        from ic256_sampler.utils import is_valid_device, is_valid_ipv4
+        from ic256_sampler.device_manager import DeviceManager, IC256_CONFIG
+        from ic256_sampler.model_collector import ModelCollector, collect_data_with_model
+        from ic256_sampler.ic256_model import IC256Model
+        
+        # Skip if IP is invalid
+        if not is_valid_ipv4(ic256_ip):
+            pytest.skip(f"Invalid IP address in config: {ic256_ip}")
+        
+        # Verify device is reachable
+        if not is_valid_device(ic256_ip, "IC256"):
+            pytest.skip(f"IC256 device at {ic256_ip} is not reachable or not responding")
+        
+        # Setup
+        device_manager = DeviceManager()
+        stop_event = threading.Event()
+        device_manager.stop_event = stop_event
+        
+        success = device_manager.add_device(IC256_CONFIG, ic256_ip, sampling_rate=500)
+        assert success, "Device should be added"
+        
+        model = IC256Model()
+        reference_channel = model.get_reference_channel()
+        
+        csv_file = tmp_path / "test_collect_loop.csv"
+        collector = ModelCollector(
+            device_manager=device_manager,
+            model=model,
+            reference_channel=reference_channel,
+            sampling_rate=500,
+            file_path=str(csv_file),
+            device_name="ic256_45",
+            note="Test",
+        )
+        
+        # Run collect_data_with_model in a thread
+        collection_thread = threading.Thread(
+            target=collect_data_with_model,
+            args=(collector, stop_event),
+            daemon=True
+        )
+        collection_thread.start()
+        
+        # Wait for collection
+        time.sleep(2.0)
+        
+        # Check progress
+        rows_before_stop = collector.csv_writer.rows_written
+        virtual_rows_before_stop = collector.virtual_database.get_row_count()
+        
+        print(f"\ncollect_data_with_model Loop Test:")
+        print(f"  After 2s collection: CSV rows={rows_before_stop}, Virtual rows={virtual_rows_before_stop}")
+        
+        # Should have written rows
+        assert rows_before_stop > 100, \
+            f"collect_data_with_model should write rows. Got {rows_before_stop} rows. " \
+            "If this fails, the loop is not calling collect_iteration() properly."
+        
+        # Stop and wait for finalization
+        stop_event.set()
+        collection_thread.join(timeout=10.0)
+        
+        # Check final state
+        final_rows = collector.csv_writer.rows_written
+        final_virtual_rows = collector.virtual_database.get_row_count()
+        
+        print(f"  Final: CSV rows={final_rows}, Virtual rows={final_virtual_rows}")
+        
+        # Verify CSV file
+        assert csv_file.exists(), "CSV file should exist"
+        
+        # Count rows in file
+        with open(csv_file, 'r', newline='') as f:
+            reader = csv.reader(f)
+            next(reader, None)  # Skip header
+            file_row_count = sum(1 for row in reader if row)
+        
+        print(f"  CSV file rows: {file_row_count}")
+        
+        assert file_row_count > 100, \
+            f"CSV file should have rows. Got {file_row_count} rows. " \
+            "If this fails, CSV writing is not working in the loop."
+
+    @pytest.mark.integration
+    def test_application_iodatabase_collects_data_after_clear(self, ic256_ip):
+        """Test that IODatabase collects data after clear_database() is called.
+        
+        This isolates whether the issue is data collection or VirtualDatabase processing.
+        """
+        from ic256_sampler.utils import is_valid_device, is_valid_ipv4
+        from ic256_sampler.application import Application
+        
+        # Skip if IP is invalid
+        if not is_valid_ipv4(ic256_ip):
+            pytest.skip(f"Invalid IP address in config: {ic256_ip}")
+        
+        # Verify device is reachable
+        if not is_valid_device(ic256_ip, "IC256"):
+            pytest.skip(f"IC256 device at {ic256_ip} is not reachable or not responding")
+        
+        # Create Application
+        app = Application()
+        
+        # Create mock GUI
+        mock_window = Mock()
+        mock_window.ix256_a_entry = Mock()
+        mock_window.ix256_a_entry.get = Mock(return_value=ic256_ip)
+        mock_window.tx2_entry = Mock()
+        mock_window.tx2_entry.get = Mock(return_value="")
+        mock_window.note_entry = Mock()
+        mock_window.note_entry.get = Mock(return_value="Test")
+        mock_window.path_entry = Mock()
+        mock_window.path_entry.get = Mock(return_value="/tmp")
+        mock_window.sampling_entry = Mock()
+        mock_window.sampling_entry.get = Mock(return_value="500")
+        mock_window.root = Mock()
+        mock_window.root.after = Mock()
+        mock_window.reset_elapse_time = Mock()
+        mock_window.reset_statistics = Mock()
+        
+        app.window = mock_window
+        
+        with patch('ic256_sampler.application.safe_gui_update'), \
+             patch('ic256_sampler.application.set_button_state_safe'), \
+             patch('ic256_sampler.application.show_message_safe'), \
+             patch('ic256_sampler.application.log_message_safe'):
+            
+            # Ensure connections
+            app._ensure_connections()
+            
+            # Simulate what _device_thread does: clear database and start
+            app.device_manager.stop_event = app.stop_event
+            app.device_manager.stop()  # Reset state
+            app.device_manager.clear_database()  # Clear database
+            
+            # Start collection
+            app.device_manager.start()
+            
+            # Wait and check IODatabase
+            time.sleep(2.0)
+            
+            io_stats = app.device_manager.get_io_database().get_statistics()
+            total_points = io_stats.get('total_data_points', 0)
+            
+            print(f"\nIODatabase After Clear Test:")
+            print(f"  IODatabase total points after 2s: {total_points}")
+            print(f"  Expected: ~1000+ points (500 Hz * 2s * multiple channels)")
+            print(f"  DeviceManager._running: {app.device_manager._running}")
+            
+            # Check thread status
+            with app.device_manager._lock:
+                for name, conn in app.device_manager.connections.items():
+                    print(f"  {name} thread alive: {conn.thread.is_alive() if conn.thread else 'N/A'}")
+            
+            # Should have collected significant data
+            assert total_points > 100, \
+                f"IODatabase should collect data after clear. Got {total_points} points. " \
+                "If this fails, DeviceManager is not collecting data after clear_database()."
+            
+            # Stop
+            app.stop_event.set()
+            app.device_manager.stop()
+
+    @pytest.mark.integration
+    def test_virtual_database_rebuild_after_single_row_build(self, ic256_ip):
+        """Test that VirtualDatabase rebuild() continues after initial single-row build.
+        
+        This tests the specific scenario: build() creates 1 row, then rebuild() should
+        continue creating more rows as new data arrives.
+        """
+        from ic256_sampler.utils import is_valid_device, is_valid_ipv4
+        from ic256_sampler.device_manager import DeviceManager, IC256_CONFIG
+        from ic256_sampler.ic256_model import IC256Model
+        from ic256_sampler.virtual_database import VirtualDatabase
+        
+        # Skip if IP is invalid
+        if not is_valid_ipv4(ic256_ip):
+            pytest.skip(f"Invalid IP address in config: {ic256_ip}")
+        
+        # Verify device is reachable
+        if not is_valid_device(ic256_ip, "IC256"):
+            pytest.skip(f"IC256 device at {ic256_ip} is not reachable or not responding")
+        
+        # Setup
+        device_manager = DeviceManager()
+        stop_event = threading.Event()
+        device_manager.stop_event = stop_event
+        
+        success = device_manager.add_device(IC256_CONFIG, ic256_ip, sampling_rate=500)
+        assert success, "Device should be added"
+        
+        device_manager.start()
+        
+        # Create VirtualDatabase
+        io_database = device_manager.get_io_database()
+        model = IC256Model()
+        reference_channel = model.get_reference_channel()
+        columns = model.create_columns(reference_channel)
+        
+        virtual_db = VirtualDatabase(
+            io_database=io_database,
+            reference_channel=reference_channel,
+            sampling_rate=500,
+            columns=columns,
+        )
+        
+        # Wait for minimal data (simulate early build)
+        time.sleep(0.1)
+        
+        # Initial build - might only create 1 row if data is minimal
+        virtual_db.build()
+        initial_count = virtual_db.get_row_count()
+        initial_built_time = virtual_db._last_built_time
+        
+        print(f"\nRebuild After Single Row Test:")
+        print(f"  Initial build: {initial_count} rows")
+        print(f"  _last_built_time: {initial_built_time}")
+        print(f"  _built: {virtual_db._built}")
+        
+        # Continue collecting
+        time.sleep(1.0)
+        
+        # Check IODatabase has more data
+        io_stats = io_database.get_statistics()
+        total_points = io_stats.get('total_data_points', 0)
+        print(f"  IODatabase points: {total_points}")
+        
+        # Rebuild should add more rows
+        virtual_db.rebuild()
+        after_rebuild_count = virtual_db.get_row_count()
+        after_built_time = virtual_db._last_built_time
+        
+        print(f"  After rebuild: {after_rebuild_count} rows")
+        print(f"  _last_built_time: {after_built_time}")
+        
+        # CRITICAL: Rebuild should add rows even if initial build only created 1 row
+        assert after_rebuild_count > initial_count, \
+            f"rebuild() should add rows after initial build. Initial: {initial_count}, After: {after_rebuild_count}. " \
+            f"If initial was 1 and after is still 1, rebuild() is not working when _last_built_time is {initial_built_time}."
+        
+        # Stop
+        stop_event.set()
+        device_manager.stop()
+
+    @pytest.mark.integration
+    def test_device_manager_threads_collect_after_stop_and_clear(self, ic256_ip):
+        """Test that DeviceManager collection threads work after stop() and clear_database().
+        
+        This simulates what happens in _device_thread: stop(), clear_database(), create new threads, start().
+        """
+        from ic256_sampler.utils import is_valid_device, is_valid_ipv4
+        from ic256_sampler.device_manager import DeviceManager, IC256_CONFIG
+        
+        # Skip if IP is invalid
+        if not is_valid_ipv4(ic256_ip):
+            pytest.skip(f"Invalid IP address in config: {ic256_ip}")
+        
+        # Verify device is reachable
+        if not is_valid_device(ic256_ip, "IC256"):
+            pytest.skip(f"IC256 device at {ic256_ip} is not reachable or not responding")
+        
+        # Setup like Application does
+        device_manager = DeviceManager()
+        stop_event = threading.Event()
+        device_manager.stop_event = stop_event
+        
+        # Add device (like _ensure_connections does)
+        success = device_manager.add_device(IC256_CONFIG, ic256_ip, sampling_rate=500)
+        assert success, "Device should be added"
+        
+        # Simulate _device_thread sequence: stop, clear, create new threads, start
+        device_manager.stop()  # Stop previous
+        device_manager.clear_database()  # Clear database
+        
+        # Create new threads (like _device_thread does)
+        with device_manager._lock:
+            connection = device_manager.connections["IC256-42/35"]
+            if connection.thread.is_alive():
+                connection.thread.join(timeout=1.0)
+            
+            # Create new thread
+            from ic256_sampler.device_manager import DeviceConfig
+            config = connection.config
+            thread = threading.Thread(
+                target=device_manager._collect_from_device,
+                name=f"{config.device_type.lower()}_device_{connection.ip_address}",
+                daemon=True,
+                args=(config, connection.client, connection.channels, connection.model, connection.field_to_path, connection.ip_address),
+            )
+            connection.thread = thread
+        
+        # Start (like collector.start() does)
+        device_manager.start()
+        
+        # Wait for collection
+        time.sleep(2.0)
+        
+        # Check IODatabase
+        io_stats = device_manager.get_io_database().get_statistics()
+        total_points = io_stats.get('total_data_points', 0)
+        
+        print(f"\nThreads After Stop/Clear Test:")
+        print(f"  IODatabase points after 2s: {total_points}")
+        print(f"  DeviceManager._running: {device_manager._running}")
+        with device_manager._lock:
+            conn = device_manager.connections["IC256-42/35"]
+            print(f"  Thread alive: {conn.thread.is_alive()}")
+        
+        # Should have collected data
+        assert total_points > 100, \
+            f"Threads should collect data after stop/clear/new thread/start. Got {total_points} points. " \
+            "If this fails, the new threads aren't collecting data properly."
+        
+        # Stop
+        stop_event.set()
+        device_manager.stop()
+
+    @pytest.mark.integration
+    def test_device_manager_start_starts_new_threads(self, ic256_ip):
+        """Test that device_manager.start() actually starts newly created threads.
+        
+        This verifies the scenario: stop(), create new threads, start().
+        """
+        from ic256_sampler.utils import is_valid_device, is_valid_ipv4
+        from ic256_sampler.device_manager import DeviceManager, IC256_CONFIG
+        
+        # Skip if IP is invalid
+        if not is_valid_ipv4(ic256_ip):
+            pytest.skip(f"Invalid IP address in config: {ic256_ip}")
+        
+        # Verify device is reachable
+        if not is_valid_device(ic256_ip, "IC256"):
+            pytest.skip(f"IC256 device at {ic256_ip} is not reachable or not responding")
+        
+        device_manager = DeviceManager()
+        stop_event = threading.Event()
+        device_manager.stop_event = stop_event
+        
+        # Add device
+        success = device_manager.add_device(IC256_CONFIG, ic256_ip, sampling_rate=500)
+        assert success, "Device should be added"
+        
+        # Start and stop once (simulate previous acquisition)
+        device_manager.start()
+        time.sleep(0.5)
+        device_manager.stop()
+        time.sleep(0.5)  # Let threads stop
+        
+        # Verify stopped
+        assert device_manager._running is False, "Should be stopped"
+        assert stop_event.is_set(), "stop_event should be set"
+        
+        # Create new thread (like _device_thread does)
+        with device_manager._lock:
+            connection = device_manager.connections["IC256-42/35"]
+            old_thread = connection.thread
+            if old_thread.is_alive():
+                old_thread.join(timeout=1.0)
+            
+            # Create new thread
+            config = connection.config
+            new_thread = threading.Thread(
+                target=device_manager._collect_from_device,
+                name=f"{config.device_type.lower()}_device_{connection.ip_address}",
+                daemon=True,
+                args=(config, connection.client, connection.channels, connection.model, connection.field_to_path, connection.ip_address),
+            )
+            connection.thread = new_thread
+        
+        # Clear stop_event and start (like start() does)
+        stop_event.clear()
+        device_manager.start()
+        
+        # Verify thread was started
+        assert device_manager._running is True, "Should be running"
+        assert not stop_event.is_set(), "stop_event should be cleared"
+        assert new_thread.is_alive(), "New thread should be started and alive"
+        
+        # Wait for data collection
+        time.sleep(2.0)
+        
+        # Check data was collected
+        io_stats = device_manager.get_io_database().get_statistics()
+        total_points = io_stats.get('total_data_points', 0)
+        
+        print(f"\nStart New Threads Test:")
+        print(f"  IODatabase points: {total_points}")
+        print(f"  Thread alive: {new_thread.is_alive()}")
+        
+        assert total_points > 100, \
+            f"New threads should collect data after start(). Got {total_points} points. " \
+            "If this fails, start() is not starting the new threads properly."
+        
+        # Stop
+        stop_event.set()
+        device_manager.stop()
+
+    @pytest.mark.integration
+    def test_application_device_thread_creates_csv(self, ic256_ip, tmp_path):
+        """Test that Application._device_thread() creates CSV with data.
+        
+        This tests the actual Application method that's called when Start is clicked.
+        """
+        from ic256_sampler.utils import is_valid_device, is_valid_ipv4
+        from ic256_sampler.application import Application
+        
+        # Skip if IP is invalid
+        if not is_valid_ipv4(ic256_ip):
+            pytest.skip(f"Invalid IP address in config: {ic256_ip}")
+        
+        # Verify device is reachable
+        if not is_valid_device(ic256_ip, "IC256"):
+            pytest.skip(f"IC256 device at {ic256_ip} is not reachable or not responding")
+        
+        # Create Application
+        app = Application()
+        
+        # Create mock GUI
+        mock_window = Mock()
+        mock_window.ix256_a_entry = Mock()
+        mock_window.ix256_a_entry.get = Mock(return_value=ic256_ip)
+        mock_window.tx2_entry = Mock()
+        mock_window.tx2_entry.get = Mock(return_value="")
+        mock_window.note_entry = Mock()
+        mock_window.note_entry.get = Mock(return_value="Device Thread Test")
+        mock_window.path_entry = Mock()
+        mock_window.path_entry.get = Mock(return_value=str(tmp_path))
+        mock_window.sampling_entry = Mock()
+        mock_window.sampling_entry.get = Mock(return_value="500")
+        mock_window.root = Mock()
+        mock_window.root.after = Mock()
+        mock_window.reset_elapse_time = Mock()
+        mock_window.reset_statistics = Mock()
+        
+        app.window = mock_window
+        
+        with patch('ic256_sampler.application.safe_gui_update'), \
+             patch('ic256_sampler.application.set_button_state_safe'), \
+             patch('ic256_sampler.application.show_message_safe'), \
+             patch('ic256_sampler.application.log_message_safe'):
+            
+            # Run _device_thread
+            device_thread = threading.Thread(
+                target=app._device_thread,
+                name="test_device_thread",
+                daemon=True
+            )
+            device_thread.start()
+            
+            # Wait for startup
+            time.sleep(1.0)
+            
+            # Verify collector was created
+            assert app.collector is not None, "Collector should be created"
+            assert app.collector_thread is not None, "Collector thread should be created"
+            
+            # Wait for collection
+            time.sleep(2.0)
+            
+            # Check progress
+            rows_during = app.collector.csv_writer.rows_written
+            virtual_rows_during = app.collector.virtual_database.get_row_count()
+            
+            # Diagnostic information
+            print(f"\nApplication._device_thread Test:")
+            print(f"  During collection: CSV rows={rows_during}, Virtual rows={virtual_rows_during}")
+            print(f"  VirtualDatabase._built: {app.collector.virtual_database._built}")
+            print(f"  VirtualDatabase._last_built_time: {app.collector.virtual_database._last_built_time}")
+            io_stats = app.device_manager.get_io_database().get_statistics()
+            print(f"  IODatabase total points: {io_stats.get('total_data_points', 0)}")
+            print(f"  DeviceManager._running: {app.device_manager._running}")
+            
+            # Check if threads are running
+            if app.collector_thread:
+                print(f"  Collector thread alive: {app.collector_thread.is_alive()}")
+            with app.device_manager._lock:
+                for name, conn in app.device_manager.connections.items():
+                    print(f"  {name} collection thread alive: {conn.thread.is_alive() if conn.thread else 'N/A'}")
+            
+            # Should have rows
+            assert rows_during > 50, \
+                f"_device_thread should create rows. Got {rows_during} CSV rows. " \
+                "If this fails, _device_thread is not working properly."
+            
+            # Stop
+            app.stop_collection()
+            time.sleep(3.0)  # Wait for finalization
+            
+            # Find CSV file
+            csv_files = list(tmp_path.glob("IC256_42x35-*.csv"))
+            assert len(csv_files) > 0, "CSV file should be created"
+            
+            csv_file = csv_files[0]
+            
+            # Count rows
+            with open(csv_file, 'r', newline='') as f:
+                reader = csv.reader(f)
+                next(reader, None)
+                file_row_count = sum(1 for row in reader if row)
+            
+            print(f"  Final CSV file rows: {file_row_count}")
+            
+            assert file_row_count > 50, \
+                f"CSV file should have rows. Got {file_row_count} rows. " \
+                "If this fails, the issue is in _device_thread or the collector loop."
+            
+            # Diagnostic: Check VirtualDatabase state
+            print(f"  VirtualDatabase._built: {app.collector.virtual_database._built}")
+            print(f"  VirtualDatabase._last_built_time: {app.collector.virtual_database._last_built_time}")
+            
+            # Diagnostic: Check IODatabase state
+            io_stats = app.device_manager.get_io_database().get_statistics()
+            print(f"  IODatabase total points: {io_stats.get('total_data_points', 0)}")
+            
+            # Diagnostic: Check if rebuild is being called
+            # We can't easily track this, but we can check if VirtualDatabase has more rows than CSV
+            virtual_final = app.collector.virtual_database.get_row_count()
+            print(f"  VirtualDatabase final rows: {virtual_final}")
+            
+            if virtual_final > file_row_count:
+                print(f"  WARNING: VirtualDatabase has {virtual_final} rows but CSV only has {file_row_count}")
+                print(f"  This suggests CSVWriter is not writing all rows, or rebuild() stopped creating rows.")

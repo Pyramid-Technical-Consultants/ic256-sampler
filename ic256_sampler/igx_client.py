@@ -177,11 +177,24 @@ class IGXWebsocketClient:
             return
 
         if self.ws.connected:
-            message = {"event": event, "data": data}
-            packed = msgpack.packb(message, use_bin_type=True)
-            # Send as binary frame (MessagePack is binary)
-            # websocket-client automatically sends bytes as binary frames
-            self.ws.send(packed)
+            try:
+                message = {"event": event, "data": data}
+                packed = msgpack.packb(message, use_bin_type=True)
+                # Send as binary frame (MessagePack is binary)
+                # websocket-client automatically sends bytes as binary frames
+                self.ws.send(packed)
+            except (ConnectionAbortedError, ConnectionResetError, OSError) as e:
+                # Connection was aborted/reset during send - try to reconnect
+                print(f"Connection error during send: {e}. Attempting reconnect: {self.ip}")
+                try:
+                    self.reconnect()
+                    # Try sending again after reconnect
+                    if self.ws.connected:
+                        message = {"event": event, "data": data}
+                        packed = msgpack.packb(message, use_bin_type=True)
+                        self.ws.send(packed)
+                except (ConnectionAbortedError, ConnectionResetError, OSError) as retry_error:
+                    print(f"Failed to send after reconnect: {self.ip}, error: {retry_error}")
         else:
             print("Reconnecting :", self.ip)
             self.reconnect()
