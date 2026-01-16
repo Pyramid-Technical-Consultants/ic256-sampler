@@ -109,6 +109,29 @@ class DeviceManager:
             return False
         
         try:
+            # Check if we already have a connection for this device
+            with self._lock:
+                if config.device_name in self.connections:
+                    existing_conn = self.connections[config.device_name]
+                    if existing_conn.ip_address == ip_address:
+                        # Connection already exists and IP matches - reuse it
+                        # Update sampling rate if needed
+                        existing_conn.model.setup_device(existing_conn.client, sampling_rate)
+                        
+                        if log_callback:
+                            log_callback(f"Reusing existing connection for {config.device_name} at {ip_address}", "INFO")
+                        return True
+                    else:
+                        # IP changed - close old connection and create new one
+                        try:
+                            if existing_conn.thread.is_alive():
+                                existing_conn.thread.join(timeout=1.0)
+                            existing_conn.client.close()
+                        except Exception:
+                            pass
+                        del self.connections[config.device_name]
+            
+            # Create new connection
             if log_callback:
                 log_callback(f"Connecting to {config.device_name} device at {ip_address}", "INFO")
             
@@ -126,6 +149,12 @@ class DeviceManager:
             
             # Get field mapping from model
             field_to_path = model.get_field_to_path_mapping()
+            
+            # Subscribe to channels immediately to prime the connection
+            client.sendSubscribeFields({
+                field: True for field in channels.values()
+            })
+            client.updateSubscribedFields()
             
             # Create data collection thread for this device
             thread = threading.Thread(
@@ -177,7 +206,11 @@ class DeviceManager:
                 connection.thread.start()
     
     def stop(self) -> None:
-        """Stop all device connections and data collection."""
+        """Stop all device connections and data collection.
+        
+        Note: This does NOT close the websocket connections - they are kept alive
+        for reuse between acquisitions. Connections persist for the entire program lifecycle.
+        """
         with self._lock:
             if not self._running:
                 return
@@ -190,12 +223,35 @@ class DeviceManager:
                 if connection.thread.is_alive():
                     connection.thread.join(timeout=5.0)
             
-            # Close all clients
+            # Clear the database for next acquisition
+            self.io_database.clear()
+    
+    def close_all_connections(self) -> None:
+        """Close all websocket connections.
+        
+        This should be called when:
+        - IP addresses change
+        - Application is shutting down
+        """
+        with self._lock:
+            # Stop collection first
+            if self._running:
+                self._running = False
+                self.stop_event.set()
+                
+                # Wait for threads to finish
+                for connection in self.connections.values():
+                    if connection.thread.is_alive():
+                        connection.thread.join(timeout=1.0)
+            
+            # Close all connections
             for connection in self.connections.values():
                 try:
                     connection.client.close()
                 except Exception:
                     pass
+            
+            self.connections.clear()
     
     def get_statistics(self) -> Dict[str, Dict[str, Any]]:
         """Get statistics from all device connections.
@@ -238,7 +294,8 @@ class DeviceManager:
         first_timestamp: Optional[int] = None
         
         try:
-            # Subscribe all channels with buffered data
+            # Subscribe all channels with buffered data (if not already subscribed)
+            # This is safe to call multiple times
             client.sendSubscribeFields({
                 field: True for field in channels.values()
             })
@@ -261,11 +318,10 @@ class DeviceManager:
             print(f"Error collecting data from {config.device_name} at {ip_address}: {e}")
             import traceback
             traceback.print_exc()
-        finally:
-            try:
-                client.close()
-            except Exception:
-                pass
+        # Note: We do NOT close the client here - it's kept alive for reuse
+        # The client will only be closed when:
+        # - IP address changes (via close_all_connections)
+        # - Application shuts down (via close_all_connections)
     
     def _collect_all_channel_data(
         self,
