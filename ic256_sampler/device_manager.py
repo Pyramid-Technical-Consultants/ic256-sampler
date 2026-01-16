@@ -48,6 +48,7 @@ class DeviceConnection:
         model: Any,
         field_to_path: Dict[str, str],
         thread: threading.Thread,
+        keepalive_thread: threading.Thread,
     ):
         self.config = config
         self.ip_address = ip_address
@@ -56,8 +57,11 @@ class DeviceConnection:
         self.env_channels = env_channels
         self.model = model
         self.field_to_path = field_to_path
-        self.thread = thread
+        self.thread = thread  # Data collection thread (only active during collection)
+        self.keepalive_thread = keepalive_thread  # Keep-alive message loop thread (always active)
         self.statistics: Dict[str, Any] = {"rows": 0, "file_size": 0}
+        self._connection_status = "disconnected"  # "connected", "disconnected", "error"
+        self._status_lock = threading.Lock()  # Lock for thread-safe status updates
 
 
 class DeviceManager:
@@ -156,7 +160,20 @@ class DeviceManager:
             })
             client.updateSubscribedFields()
             
-            # Create data collection thread for this device
+            # Create keep-alive message loop thread (runs continuously to keep connection active)
+            keepalive_thread = threading.Thread(
+                target=self._keepalive_message_loop,
+                name=f"{config.device_type.lower()}_keepalive_{ip_address}",
+                daemon=True,
+                args=(client, channels, field_to_path, config.device_name),
+            )
+            keepalive_thread.start()  # Start immediately to keep connection active
+            
+            # Set initial connection status
+            with self._lock:
+                connection = None  # Will be created below
+            
+            # Create data collection thread for this device (only active during collection)
             thread = threading.Thread(
                 target=self._collect_from_device,
                 name=f"{config.device_type.lower()}_device_{ip_address}",
@@ -174,6 +191,7 @@ class DeviceManager:
                 model=model,
                 field_to_path=field_to_path,
                 thread=thread,
+                keepalive_thread=keepalive_thread,
             )
             
             # Store connection
@@ -278,6 +296,50 @@ class DeviceManager:
         with self._lock:
             self.io_database.clear()
     
+    def _keepalive_message_loop(
+        self,
+        client: IGXWebsocketClient,
+        channels: Dict[str, Any],
+        field_to_path: Dict[str, str],
+    ) -> None:
+        """Keep-alive message loop that runs continuously to keep the connection active.
+        
+        This thread:
+        - Continuously calls updateSubscribedFields() to process incoming messages
+        - Keeps the websocket connection alive and exercised
+        - Processes messages even when not collecting (data is ignored outside collection)
+        
+        Args:
+            client: The websocket client
+            channels: Dictionary of channel fields
+            field_to_path: Dictionary mapping field names to channel paths
+        """
+        try:
+            while True:  # Run indefinitely to keep connection alive
+                try:
+                    # Update subscribed fields - this processes incoming messages
+                    # and keeps the connection active by sending "get" events and receiving responses
+                    # This exercises the connection even when not collecting
+                    client.updateSubscribedFields()
+                    
+                    # Small sleep to prevent tight loop
+                    time.sleep(0.001)
+                    
+                except (ConnectionAbortedError, ConnectionResetError, OSError) as e:
+                    # Connection errors - the connection may have been closed
+                    # Exit the keep-alive thread (connection will be recreated if needed)
+                    print(f"Connection error in keep-alive message loop: {e}")
+                    break
+                except Exception as e:
+                    # Other errors - log but continue to keep trying
+                    print(f"Error in keep-alive message loop: {e}")
+                    time.sleep(0.1)  # Longer sleep on error to avoid tight error loop
+                    
+        except Exception as e:
+            print(f"Fatal error in keep-alive message loop: {e}")
+            import traceback
+            traceback.print_exc()
+    
     def _collect_from_device(
         self,
         config: DeviceConfig,
@@ -289,23 +351,15 @@ class DeviceManager:
     ) -> None:
         """Collect data from a single device into the shared IODatabase.
         
-        This is the thread target for each device connection.
+        This is the thread target for each device connection during active collection.
+        Note: The keep-alive thread handles the message loop, so this thread
+        primarily focuses on data collection when active.
         """
         first_timestamp: Optional[int] = None
         
         try:
-            # Subscribe all channels with buffered data (if not already subscribed)
-            # This is safe to call multiple times
-            client.sendSubscribeFields({
-                field: True for field in channels.values()
-            })
-            client.updateSubscribedFields()
-            
-            # Main collection loop
+            # Main collection loop (keep-alive thread handles message processing)
             while not self.stop_event.is_set():
-                # Update subscribed fields
-                client.updateSubscribedFields()
-                
                 # Collect all data from this device (all channels, including environmental)
                 first_timestamp = self._collect_all_channel_data(
                     channels, field_to_path, first_timestamp

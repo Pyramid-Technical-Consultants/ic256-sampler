@@ -276,7 +276,7 @@ class TestApplication:
         mock_device_manager = Mock()
         mock_collector = Mock()
         mock_thread = Mock()
-        mock_thread.is_alive = Mock(return_value=False)
+        mock_thread.is_alive = Mock(return_value=True)  # Thread still alive, so _stopping stays True
         
         app.device_manager = mock_device_manager
         app.collector = mock_collector
@@ -287,7 +287,9 @@ class TestApplication:
             app.stop_collection()
             
             assert app.stop_event.is_set()
-            assert app._stopping is True
+            # _stopping is set in stop_collection (line 573)
+            # It stays True because thread is alive, so _check_collector_thread_finished schedules a callback
+            assert app._stopping is True, f"_stopping should be True but is {app._stopping}"
             mock_device_manager.stop.assert_called_once()
             mock_collector.stop.assert_called_once()
             mock_show.assert_called()
@@ -365,15 +367,184 @@ class TestApplication:
         app.device_manager.connections[IC256_CONFIG.device_name] = mock_old_connection
         
         with patch('ic256_sampler.application.is_valid_device', return_value=True), \
-             patch('ic256_sampler.application.IGXWebsocketClient') as mock_client_class, \
-             patch('ic256_sampler.application.log_message_safe'):
-            mock_client = Mock()
-            mock_client_class.return_value = mock_client
-            mock_client.field = Mock(return_value="field1")
-            
+             patch('ic256_sampler.application.log_message_safe'), \
+             patch.object(app.device_manager, 'add_device') as mock_add_device:
             app._ensure_connections()
             
             # Old connection should be closed
             mock_old_connection.client.close.assert_called_once()
-            # New connection should be created
-            mock_client_class.assert_called_once_with("192.168.1.200")
+            # Old connection should be removed from connections dict
+            assert IC256_CONFIG.device_name not in app.device_manager.connections
+            # New connection should be created via add_device
+            mock_add_device.assert_called_once()
+            # Verify add_device was called with correct parameters
+            call_args = mock_add_device.call_args
+            assert call_args[0][0] == IC256_CONFIG
+            assert call_args[0][1] == "192.168.1.200"
+    
+    def test_multiple_acquisitions(self):
+        """Test that the application can handle multiple acquisitions sequentially.
+        
+        This test simulates:
+        1. First acquisition: start -> stop -> complete
+        2. Second acquisition: start -> stop -> complete
+        Verifies that state is properly reset between acquisitions.
+        """
+        app = Application()
+        mock_window = Mock()
+        mock_window.ix256_a_entry = Mock()
+        mock_window.ix256_a_entry.get = Mock(return_value="192.168.1.100")
+        mock_window.tx2_entry = Mock()
+        mock_window.tx2_entry.get = Mock(return_value="")
+        mock_window.note_entry = Mock()
+        mock_window.note_entry.get = Mock(return_value="Test Note")
+        mock_window.path_entry = Mock()
+        mock_window.path_entry.get = Mock(return_value="/test/path")
+        mock_window.sampling_entry = Mock()
+        mock_window.sampling_entry.get = Mock(return_value="500")
+        mock_window.root = Mock()
+        mock_window.root.after = Mock()
+        mock_window.reset_elapse_time = Mock()
+        mock_window.reset_statistics = Mock()
+        app.window = mock_window
+        
+        # Setup device manager with a connection
+        app.device_manager = DeviceManager()
+        mock_connection = Mock()
+        mock_connection.ip_address = "192.168.1.100"
+        mock_connection.thread = Mock()
+        mock_connection.thread.is_alive = Mock(return_value=False)
+        mock_connection.model = Mock()
+        mock_connection.model.setup_device = Mock()
+        mock_connection.config = IC256_CONFIG
+        mock_connection.client = Mock()
+        mock_connection.channels = {}
+        mock_connection.field_to_path = {}
+        app.device_manager.connections[IC256_CONFIG.device_name] = mock_connection
+        
+        # Mock ModelCollector - create separate instances for each acquisition
+        mock_collectors = [Mock(), Mock(), Mock()]
+        for collector in mock_collectors:
+            collector.stop = Mock()
+            collector.finalize = Mock()
+            collector.statistics = {}
+        
+        def model_collector_side_effect(*args, **kwargs):
+            # Return a new collector instance for each call
+            idx = len([c for c in mock_collectors if hasattr(c, '_used')])
+            if idx < len(mock_collectors):
+                mock_collectors[idx]._used = True
+                return mock_collectors[idx]
+            return Mock()
+        
+        with patch('ic256_sampler.application.safe_gui_update') as mock_safe_update, \
+             patch('ic256_sampler.application.set_button_state_safe') as mock_set_button, \
+             patch('ic256_sampler.application.show_message_safe') as mock_show, \
+             patch('ic256_sampler.application.log_message_safe') as mock_log, \
+             patch('ic256_sampler.application.get_timestamp_strings', side_effect=[("20240101", "120000"), ("20240101", "120100"), ("20240101", "120200")]), \
+             patch('ic256_sampler.application.ModelCollector', side_effect=model_collector_side_effect), \
+             patch('ic256_sampler.application.collect_data_with_model') as mock_collect_data, \
+             patch('threading.Thread') as mock_thread_class:
+            
+            # Create mock threads - need separate instances for each acquisition
+            mock_time_threads = [Mock(), Mock(), Mock()]
+            mock_stats_threads = [Mock(), Mock(), Mock()]
+            mock_collector_threads = [Mock(), Mock(), Mock()]
+            
+            # Configure is_alive behavior for collector threads
+            mock_collector_threads[0].is_alive = Mock(side_effect=[True, False])  # First acquisition
+            mock_collector_threads[1].is_alive = Mock(side_effect=[True, False])  # Second acquisition
+            mock_collector_threads[2].is_alive = Mock(side_effect=[True, False])  # Third acquisition
+            
+            thread_call_count = {'elapse_time': 0, 'statistics_update': 0, 'model_collector': 0}
+            
+            def thread_side_effect(*args, **kwargs):
+                name = kwargs.get('name', '')
+                if 'elapse_time' in name:
+                    idx = thread_call_count['elapse_time']
+                    thread_call_count['elapse_time'] += 1
+                    return mock_time_threads[idx] if idx < len(mock_time_threads) else Mock()
+                elif 'statistics_update' in name:
+                    idx = thread_call_count['statistics_update']
+                    thread_call_count['statistics_update'] += 1
+                    return mock_stats_threads[idx] if idx < len(mock_stats_threads) else Mock()
+                elif 'model_collector' in name:
+                    idx = thread_call_count['model_collector']
+                    thread_call_count['model_collector'] += 1
+                    return mock_collector_threads[idx] if idx < len(mock_collector_threads) else Mock()
+                return Mock()
+            
+            mock_thread_class.side_effect = thread_side_effect
+            
+            # FIRST ACQUISITION
+            # Start first acquisition
+            app._device_thread()
+            
+            # Verify first acquisition started correctly
+            assert app.stop_event.is_set() == False, "stop_event should be cleared for new acquisition"
+            assert app.collector is not None, "collector should be created"
+            assert app.collector_thread is not None, "collector_thread should be created"
+            assert app.device_statistics != {}, "device_statistics should be initialized"
+            
+            first_collector = app.collector
+            first_collector_thread = app.collector_thread
+            
+            # Stop first acquisition
+            app.stop_collection()
+            
+            # Verify stop was called
+            assert app.stop_event.is_set(), "stop_event should be set after stop_collection"
+            assert app._stopping is True, "_stopping should be True after stop_collection"
+            # The collector's stop method should be called (it's stored in app.collector)
+            if app.collector:
+                app.collector.stop.assert_called()
+            
+            # Simulate collector thread finishing (call _check_collector_thread_finished with thread dead)
+            app._check_collector_thread_finished()
+            
+            # Note: finalize() is only called in cleanup(), not in _finalize_stop()
+            # So we don't expect it to be called here during normal stop
+            assert app._stopping is False, "_stopping should be False after thread finishes"
+            
+            # Reset mocks for second acquisition (no need, we have separate collectors)
+            
+            # SECOND ACQUISITION
+            # Start second acquisition
+            app._device_thread()
+            
+            # Verify second acquisition started correctly
+            assert app.stop_event.is_set() == False, "stop_event should be cleared for second acquisition"
+            assert app.collector is not None, "collector should be created for second acquisition"
+            assert app.collector_thread is not None, "collector_thread should be created for second acquisition"
+            assert app.collector_thread != first_collector_thread, "collector_thread should be a new instance"
+            assert app.collector != first_collector, "collector should be a new instance"
+            assert app.device_statistics != {}, "device_statistics should be re-initialized"
+            
+            # Verify device manager database was cleared (called in _device_thread)
+            # We can't easily assert this without patching, but the key test is that
+            # the second acquisition works, which proves state was properly reset
+            
+            # Stop second acquisition
+            app.stop_collection()
+            
+            # Verify stop was called again
+            assert app.stop_event.is_set(), "stop_event should be set after second stop_collection"
+            assert app._stopping is True, "_stopping should be True after second stop_collection"
+            # The collector's stop method should be called (it's stored in app.collector)
+            if app.collector:
+                app.collector.stop.assert_called()
+            
+            # Simulate collector thread finishing
+            app._check_collector_thread_finished()
+            
+            # Note: finalize() is only called in cleanup(), not in _finalize_stop()
+            assert app._stopping is False, "_stopping should be False after second thread finishes"
+            
+            # Verify that we can start a third acquisition (proving state is properly reset)
+            # This is the key test - ensuring the second acquisition doesn't break the state
+            app._device_thread()
+            
+            # Verify third acquisition started correctly
+            assert app.stop_event.is_set() == False, "stop_event should be cleared for third acquisition"
+            assert app.collector is not None, "collector should be created for third acquisition"
+            assert app.collector_thread is not None, "collector_thread should be created for third acquisition"

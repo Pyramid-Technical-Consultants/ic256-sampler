@@ -499,6 +499,7 @@ class GUI:
 
     def render_date_time(self):
         """Render date/time display in tab header."""
+        # Date/time label
         self.display_time = tk.Label(
             self.tab,
             font=FONTS["date_time"],
@@ -507,6 +508,27 @@ class GUI:
         )
         self.display_time.place(x=350, y=3)
         self.update_date_time()
+        
+        # Connection status indicator (next to clock)
+        self.connection_status_label = tk.Label(
+            self.tab,
+            font=FONTS["date_time"],
+            fg=COLORS["text_secondary"],
+            bg=COLORS["background"],
+            text="●"
+        )
+        # Position it to the right of the clock (we'll update position after first clock update)
+        self.connection_status_label.place(x=550, y=3)
+        
+        # Connection status text (device names)
+        self.connection_status_text = tk.Label(
+            self.tab,
+            font=("Segoe UI", 9),
+            fg=COLORS["text_secondary"],
+            bg=COLORS["background"],
+            text=""
+        )
+        self.connection_status_text.place(x=570, y=3)
 
     def render_main_tab(self):
         """Render the main tab with centered, beautiful layout."""
