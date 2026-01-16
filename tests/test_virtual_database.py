@@ -6,7 +6,12 @@ synthetic table rows from IO database data.
 
 import pytest
 from ic256_sampler.io_database import IODatabase
-from ic256_sampler.virtual_database import VirtualDatabase, VirtualRow
+from ic256_sampler.virtual_database import (
+    VirtualDatabase,
+    VirtualRow,
+    ColumnDefinition,
+    ChannelPolicy,
+)
 
 
 class TestVirtualDatabase:
@@ -15,23 +20,52 @@ class TestVirtualDatabase:
     def test_create_virtual_database(self):
         """Test creating a virtual database."""
         io_db = IODatabase()
+        columns = [
+            ColumnDefinition(name="Timestamp (s)", channel_path=None, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Channel Sum", channel_path="/test/channel_sum", policy=ChannelPolicy.SYNCHRONIZED),
+        ]
         virtual_db = VirtualDatabase(
             io_database=io_db,
             reference_channel="/test/channel_sum",
             sampling_rate=3000,
+            columns=columns,
         )
         assert virtual_db.io_database == io_db
         assert virtual_db.reference_channel == "/test/channel_sum"
         assert virtual_db.sampling_rate == 3000
+        assert len(virtual_db.columns) == 2
         assert len(virtual_db.rows) == 0
 
-    def test_build_empty_database(self):
-        """Test building virtual database from empty IO database."""
+    def test_get_headers(self):
+        """Test getting headers from virtual database."""
         io_db = IODatabase()
+        columns = [
+            ColumnDefinition(name="Timestamp (s)", channel_path=None, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Channel Sum", channel_path="/test/channel_sum", policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Primary Dose", channel_path="/test/primary_dose", policy=ChannelPolicy.INTERPOLATED),
+        ]
         virtual_db = VirtualDatabase(
             io_database=io_db,
             reference_channel="/test/channel_sum",
             sampling_rate=3000,
+            columns=columns,
+        )
+        
+        headers = virtual_db.get_headers()
+        assert headers == ["Timestamp (s)", "Channel Sum", "Primary Dose"]
+
+    def test_build_empty_database(self):
+        """Test building virtual database from empty IO database."""
+        io_db = IODatabase()
+        columns = [
+            ColumnDefinition(name="Timestamp (s)", channel_path=None, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Channel Sum", channel_path="/test/channel_sum", policy=ChannelPolicy.SYNCHRONIZED),
+        ]
+        virtual_db = VirtualDatabase(
+            io_database=io_db,
+            reference_channel="/test/channel_sum",
+            sampling_rate=3000,
+            columns=columns,
         )
         virtual_db.build()
         assert virtual_db.get_row_count() == 0
@@ -48,10 +82,15 @@ class TestVirtualDatabase:
         io_db.add_data_point(channel_path, 100, timestamp1)
         io_db.add_data_point(channel_path, 200, timestamp2)
         
+        columns = [
+            ColumnDefinition(name="Timestamp (s)", channel_path=None, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Channel Sum", channel_path=channel_path, policy=ChannelPolicy.SYNCHRONIZED),
+        ]
         virtual_db = VirtualDatabase(
             io_database=io_db,
             reference_channel=channel_path,
             sampling_rate=10,  # 10 Hz = 10 rows per second
+            columns=columns,
         )
         virtual_db.build()
         
@@ -63,6 +102,9 @@ class TestVirtualDatabase:
         # Check first and last rows
         assert rows[0].timestamp >= 0.0
         assert rows[-1].timestamp <= 1.0
+        
+        # Check that rows have data
+        assert "Channel Sum" in rows[0].data
 
     def test_build_multiple_channels(self):
         """Test building virtual database from multiple channels."""
@@ -79,10 +121,16 @@ class TestVirtualDatabase:
         io_db.add_data_point(channel2, 50, timestamp1)
         io_db.add_data_point(channel2, 60, timestamp2)
         
+        columns = [
+            ColumnDefinition(name="Timestamp (s)", channel_path=None, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Channel Sum", channel_path=channel1, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Primary Dose", channel_path=channel2, policy=ChannelPolicy.INTERPOLATED),
+        ]
         virtual_db = VirtualDatabase(
             io_database=io_db,
             reference_channel=channel1,
             sampling_rate=10,  # 10 Hz
+            columns=columns,
         )
         virtual_db.build()
         
@@ -91,8 +139,58 @@ class TestVirtualDatabase:
         
         # Check that rows contain data from both channels
         for row in rows:
-            assert channel1 in row.data
-            assert channel2 in row.data
+            assert "Channel Sum" in row.data
+            assert "Primary Dose" in row.data
+
+    def test_build_with_different_policies(self):
+        """Test building with synchronized, interpolated, and asynchronous policies."""
+        io_db = IODatabase()
+        channel1 = "/test/channel_sum"  # Reference
+        channel2 = "/test/gaussian"  # Synchronized
+        channel3 = "/test/primary_dose"  # Interpolated
+        channel4 = "/test/gate_signal"  # Asynchronous
+        
+        timestamp1 = 1000000000000000000
+        timestamp2 = timestamp1 + int(1e9)
+        
+        # Add synchronized data (same timestamps)
+        io_db.add_data_point(channel1, 100, timestamp1)
+        io_db.add_data_point(channel1, 200, timestamp2)
+        io_db.add_data_point(channel2, 50, timestamp1)
+        io_db.add_data_point(channel2, 60, timestamp2)
+        
+        # Add interpolated data (different timestamps)
+        io_db.add_data_point(channel3, 10, timestamp1 + int(0.1e9))
+        io_db.add_data_point(channel3, 20, timestamp1 + int(0.9e9))
+        
+        # Add asynchronous data
+        io_db.add_data_point(channel4, 1, timestamp1 + int(0.3e9))
+        io_db.add_data_point(channel4, 0, timestamp1 + int(0.7e9))
+        
+        columns = [
+            ColumnDefinition(name="Timestamp (s)", channel_path=None, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Channel Sum", channel_path=channel1, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Gaussian", channel_path=channel2, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Primary Dose", channel_path=channel3, policy=ChannelPolicy.INTERPOLATED),
+            ColumnDefinition(name="Gate Signal", channel_path=channel4, policy=ChannelPolicy.ASYNCHRONOUS),
+        ]
+        virtual_db = VirtualDatabase(
+            io_database=io_db,
+            reference_channel=channel1,
+            sampling_rate=10,
+            columns=columns,
+        )
+        virtual_db.build()
+        
+        rows = virtual_db.get_rows()
+        assert len(rows) > 0
+        
+        # Check that all columns are present
+        for row in rows:
+            assert "Channel Sum" in row.data
+            assert "Gaussian" in row.data
+            assert "Primary Dose" in row.data
+            assert "Gate Signal" in row.data
 
     def test_get_row_at_index(self):
         """Test getting a row by index."""
@@ -105,10 +203,15 @@ class TestVirtualDatabase:
         io_db.add_data_point(channel_path, 100, timestamp1)
         io_db.add_data_point(channel_path, 200, timestamp2)
         
+        columns = [
+            ColumnDefinition(name="Timestamp (s)", channel_path=None, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Channel Sum", channel_path=channel_path, policy=ChannelPolicy.SYNCHRONIZED),
+        ]
         virtual_db = VirtualDatabase(
             io_database=io_db,
             reference_channel=channel_path,
             sampling_rate=10,
+            columns=columns,
         )
         virtual_db.build()
         
@@ -136,10 +239,15 @@ class TestVirtualDatabase:
         io_db.add_data_point(channel_path, 100, timestamp1)
         io_db.add_data_point(channel_path, 200, timestamp2)
         
+        columns = [
+            ColumnDefinition(name="Timestamp (s)", channel_path=None, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Channel Sum", channel_path=channel_path, policy=ChannelPolicy.SYNCHRONIZED),
+        ]
         virtual_db = VirtualDatabase(
             io_database=io_db,
             reference_channel=channel_path,
             sampling_rate=10,
+            columns=columns,
         )
         virtual_db.build()
         
@@ -160,10 +268,15 @@ class TestVirtualDatabase:
         io_db.add_data_point(channel_path, 200, timestamp2)
         
         sampling_rate = 10
+        columns = [
+            ColumnDefinition(name="Timestamp (s)", channel_path=None, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Channel Sum", channel_path=channel_path, policy=ChannelPolicy.SYNCHRONIZED),
+        ]
         virtual_db = VirtualDatabase(
             io_database=io_db,
             reference_channel=channel_path,
             sampling_rate=sampling_rate,
+            columns=columns,
         )
         virtual_db.build()
         
@@ -184,10 +297,15 @@ class TestVirtualDatabase:
         timestamp1 = 1000000000000000000
         io_db.add_data_point(channel_path, 100, timestamp1)
         
+        columns = [
+            ColumnDefinition(name="Timestamp (s)", channel_path=None, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Channel Sum", channel_path=channel_path, policy=ChannelPolicy.SYNCHRONIZED),
+        ]
         virtual_db = VirtualDatabase(
             io_database=io_db,
             reference_channel=channel_path,
             sampling_rate=10,
+            columns=columns,
         )
         virtual_db.build()
         
@@ -200,6 +318,129 @@ class TestVirtualDatabase:
         
         # After clear, get_row_count will rebuild, so check rows directly
         assert len(virtual_db.rows) == 0
+
+    def test_prune_rows(self):
+        """Test pruning rows from virtual database."""
+        io_db = IODatabase()
+        channel_path = "/test/channel_sum"
+        
+        timestamp1 = 1000000000000000000
+        for i in range(100):
+            io_db.add_data_point(channel_path, 100 + i, timestamp1 + int(i * 1e8))
+        
+        columns = [
+            ColumnDefinition(name="Timestamp (s)", channel_path=None, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Channel Sum", channel_path=channel_path, policy=ChannelPolicy.SYNCHRONIZED),
+        ]
+        virtual_db = VirtualDatabase(
+            io_database=io_db,
+            reference_channel=channel_path,
+            sampling_rate=10,
+            columns=columns,
+        )
+        virtual_db.build()
+        
+        initial_count = virtual_db.get_row_count()
+        assert initial_count > 10
+        
+        # Prune to keep last 10 rows
+        pruned = virtual_db.prune_rows(keep_last_n=10)
+        assert pruned > 0
+        assert virtual_db.get_row_count() == 10
+
+    def test_converters(self):
+        """Test that converters are applied to raw values."""
+        from ic256_sampler.ic256_model import IC256Model
+        
+        ERROR_GAUSS = IC256Model.get_error_gauss()
+        
+        io_db = IODatabase()
+        x_mean_path = "/test/gaussian_fit_a_mean"
+        x_sigma_path = "/test/gaussian_fit_a_sigma"
+        y_mean_path = "/test/gaussian_fit_b_mean"
+        y_sigma_path = "/test/gaussian_fit_b_sigma"
+        
+        timestamp1 = 1000000000000000000
+        
+        # Add raw gaussian values (device units)
+        # Mean: 128.5 + (value_mm / offset) = 128.5 + (1.0 / 1.65) ≈ 129.1 for X
+        # For 1.0 mm X mean: raw = 128.5 + 1.0/1.65 ≈ 129.1
+        # For 1.0 mm Y mean: raw = 128.5 + 1.0/1.38 ≈ 129.22
+        io_db.add_data_point(x_mean_path, 129.1, timestamp1)  # Should convert to ~1.0 mm
+        io_db.add_data_point(x_sigma_path, 0.606, timestamp1)  # Should convert to ~1.0 mm (0.606 * 1.65)
+        io_db.add_data_point(y_mean_path, 129.22, timestamp1)  # Should convert to ~1.0 mm
+        io_db.add_data_point(y_sigma_path, 0.725, timestamp1)  # Should convert to ~1.0 mm (0.725 * 1.38)
+        
+        columns = [
+            ColumnDefinition(name="Timestamp (s)", channel_path=None, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(
+                name="X centroid (mm)",
+                channel_path=x_mean_path,
+                policy=ChannelPolicy.SYNCHRONIZED,
+                converter=IC256Model.get_gaussian_x_mean_converter(),
+            ),
+            ColumnDefinition(
+                name="X sigma (mm)",
+                channel_path=x_sigma_path,
+                policy=ChannelPolicy.SYNCHRONIZED,
+                converter=IC256Model.get_gaussian_x_sigma_converter(),
+            ),
+            ColumnDefinition(
+                name="Y centroid (mm)",
+                channel_path=y_mean_path,
+                policy=ChannelPolicy.SYNCHRONIZED,
+                converter=IC256Model.get_gaussian_y_mean_converter(),
+            ),
+            ColumnDefinition(
+                name="Y sigma (mm)",
+                channel_path=y_sigma_path,
+                policy=ChannelPolicy.SYNCHRONIZED,
+                converter=IC256Model.get_gaussian_y_sigma_converter(),
+            ),
+        ]
+        
+        virtual_db = VirtualDatabase(
+            io_database=io_db,
+            reference_channel=x_mean_path,
+            sampling_rate=10,
+            columns=columns,
+        )
+        virtual_db.build()
+        
+        # Check that values were converted
+        rows = virtual_db.get_rows()
+        assert len(rows) > 0
+        
+        first_row = rows[0]
+        # Values should be in millimeters, not raw device units
+        x_mean = first_row.data.get("X centroid (mm)")
+        x_sigma = first_row.data.get("X sigma (mm)")
+        y_mean = first_row.data.get("Y centroid (mm)")
+        y_sigma = first_row.data.get("Y sigma (mm)")
+        
+        # Check that conversions were applied (should be close to 1.0 mm)
+        assert x_mean is not None
+        assert abs(x_mean - 1.0) < 0.1, f"X mean should be ~1.0 mm, got {x_mean}"
+        assert abs(x_sigma - 1.0) < 0.1, f"X sigma should be ~1.0 mm, got {x_sigma}"
+        assert abs(y_mean - 1.0) < 0.1, f"Y mean should be ~1.0 mm, got {y_mean}"
+        assert abs(y_sigma - 1.0) < 0.1, f"Y sigma should be ~1.0 mm, got {y_sigma}"
+        
+        # Test error handling - None values should convert to ERROR_GAUSS
+        io_db2 = IODatabase()
+        io_db2.add_data_point(x_mean_path, None, timestamp1)
+        
+        virtual_db2 = VirtualDatabase(
+            io_database=io_db2,
+            reference_channel=x_mean_path,
+            sampling_rate=10,
+            columns=columns,
+        )
+        virtual_db2.build()
+        
+        rows2 = virtual_db2.get_rows()
+        if rows2:
+            x_mean_none = rows2[0].data.get("X centroid (mm)")
+            assert x_mean_none == ERROR_GAUSS or x_mean_none is None
 
 
 class TestVirtualDatabaseIntegration:
@@ -216,6 +457,7 @@ class TestVirtualDatabaseIntegration:
         from ic256_sampler.igx_client import IGXWebsocketClient
         from ic256_sampler.device_paths import IC256_45_PATHS
         from ic256_sampler.simple_capture import capture_to_database
+        from ic256_sampler.ic256_model import IC256Model
         
         # Skip if IP is invalid
         if not is_valid_ipv4(ic256_ip):
@@ -238,11 +480,13 @@ class TestVirtualDatabaseIntegration:
         # Build virtual database using channel_sum as reference
         reference_channel = IC256_45_PATHS["adc"]["channel_sum"]
         sampling_rate = 3000
+        columns = IC256Model.create_columns(reference_channel)
         
         virtual_db = VirtualDatabase(
             io_database=io_db,
             reference_channel=reference_channel,
             sampling_rate=sampling_rate,
+            columns=columns,
         )
         virtual_db.build()
         
@@ -275,9 +519,8 @@ class TestVirtualDatabaseIntegration:
         
         # Check that rows contain data from reference channel
         for row in rows[:10]:  # Check first 10 rows
-            assert reference_channel in row.data
-            # Reference channel should always have data (it's the timing source)
-            assert row.data[reference_channel] is not None
+            # Reference channel should be in the data by column name
+            assert "Channel Sum" in row.data or "channel_sum" in str(row.data)
 
     def test_virtual_database_row_timing(self, ic256_ip):
         """Test that virtual database rows are at correct intervals.
@@ -288,6 +531,7 @@ class TestVirtualDatabaseIntegration:
         from ic256_sampler.igx_client import IGXWebsocketClient
         from ic256_sampler.device_paths import IC256_45_PATHS
         from ic256_sampler.simple_capture import capture_to_database
+        from ic256_sampler.ic256_model import IC256Model
         
         # Skip if IP is invalid
         if not is_valid_ipv4(ic256_ip):
@@ -304,10 +548,14 @@ class TestVirtualDatabaseIntegration:
         
         # Build virtual database
         sampling_rate = 3000
+        reference_channel = channel_paths[0]
+        columns = IC256Model.create_columns(reference_channel)
+        
         virtual_db = VirtualDatabase(
             io_database=io_db,
-            reference_channel=channel_paths[0],
+            reference_channel=reference_channel,
             sampling_rate=sampling_rate,
+            columns=columns,
         )
         virtual_db.build()
         

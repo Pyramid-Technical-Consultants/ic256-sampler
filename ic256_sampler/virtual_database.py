@@ -3,9 +3,10 @@
 This module provides a VirtualDatabase class that uses an IODatabase to create
 a synthetic table database with rows at regular intervals. The database defines
 column policies (synchronized, interpolated, asynchronous) and header names.
+It also supports converters to transform raw data values to desired units.
 """
 
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from .io_database import IODatabase, DataPoint, ChannelData
@@ -18,6 +19,15 @@ class ChannelPolicy(Enum):
     ASYNCHRONOUS = "asynchronous"  # Snap to nearest point (no interpolation)
 
 
+# Converter function type - generic function that transforms a value
+Converter = Callable[[Any], Any]
+
+
+def identity_converter(value: Any) -> Any:
+    """Identity converter - returns value as-is."""
+    return value
+
+
 @dataclass
 class ColumnDefinition:
     """Definition for a column in the virtual database.
@@ -26,10 +36,12 @@ class ColumnDefinition:
         name: Column name (for CSV header)
         channel_path: Path to the IO channel (None for computed columns)
         policy: How to match this channel to reference timestamps
+        converter: Function to convert raw value to desired units (default: identity)
     """
     name: str
     channel_path: Optional[str] = None
     policy: ChannelPolicy = ChannelPolicy.INTERPOLATED
+    converter: Converter = field(default_factory=lambda: identity_converter)
 
 
 @dataclass
@@ -53,7 +65,8 @@ class VirtualDatabase:
     other channels to the reference timestamps.
     
     The columns in the virtual database match 1:1 with CSV columns, and this
-    class defines the header names and collection policies.
+    class defines the header names and collection policies. Converters can be
+    applied to transform raw data values to desired units.
     
     Attributes:
         io_database: The underlying IO database
@@ -137,14 +150,14 @@ class VirtualDatabase:
         """Get data for all columns at a specific elapsed time.
         
         Applies the appropriate policy (synchronized, interpolated, asynchronous)
-        for each column based on its definition.
+        for each column based on its definition, then applies the converter.
         
         Args:
             target_elapsed: Target elapsed time in seconds
             row_interval: Time interval between rows (for tolerance calculation)
             
         Returns:
-            Dictionary mapping column names to values
+            Dictionary mapping column names to converted values
         """
         result = {}
         
@@ -154,7 +167,9 @@ class VirtualDatabase:
             return result
         
         ref_point = self._find_point_at_time(ref_channel.data_points, target_elapsed, row_interval * 0.5)
-        ref_timestamp_ns = ref_point[2] if ref_point else None  # Original timestamp for synchronized matching
+        # For synchronized channels, we need the original timestamp_ns from the reference point
+        # This allows us to match channels that arrived together
+        ref_timestamp_ns = ref_point[2] if ref_point else None
         
         # Process each column according to its policy
         for col_def in self.columns:
@@ -169,32 +184,40 @@ class VirtualDatabase:
                 continue
             
             # Apply policy-specific matching
+            raw_value = None
             if col_def.policy == ChannelPolicy.SYNCHRONIZED:
                 # Must match exact timestamp (within small tolerance)
                 # Use original timestamp_ns for matching
-                value = self._find_synchronized_value(
+                raw_value = self._find_synchronized_value(
                     channel_data.data_points,
                     ref_timestamp_ns,
                     tolerance_ns=1000,  # 1 microsecond tolerance
                 )
             elif col_def.policy == ChannelPolicy.INTERPOLATED:
                 # Interpolate between surrounding points
-                value = self._interpolate_value(
+                raw_value = self._interpolate_value(
                     channel_data.data_points,
                     target_elapsed,
                     tolerance=row_interval * 2.0,
                 )
             elif col_def.policy == ChannelPolicy.ASYNCHRONOUS:
                 # Snap to nearest point
-                value = self._find_nearest_value(
+                raw_value = self._find_nearest_value(
                     channel_data.data_points,
                     target_elapsed,
                     tolerance=row_interval * 2.0,
                 )
-            else:
-                value = None
             
-            result[col_def.name] = value
+            # Apply converter to transform raw value
+            if raw_value is not None:
+                try:
+                    converted_value = col_def.converter(raw_value)
+                    result[col_def.name] = converted_value
+                except Exception as e:
+                    # If conversion fails, use None
+                    result[col_def.name] = None
+            else:
+                result[col_def.name] = None
         
         return result
     
@@ -443,90 +466,6 @@ class VirtualDatabase:
         return rows_to_remove
 
 
-def create_ic256_columns(
-    io_database: IODatabase,
-    reference_channel: str,
-) -> List[ColumnDefinition]:
-    """Create column definitions for IC256 device.
-    
-    Args:
-        io_database: IODatabase to get channel paths from
-        reference_channel: Channel path to use as reference
-        
-    Returns:
-        List of ColumnDefinition objects in CSV order
-    """
-    from .device_paths import IC256_45_PATHS
-    
-    columns = [
-        # Timestamp is computed, not from a channel
-        ColumnDefinition(name="Timestamp (s)", channel_path=None, policy=ChannelPolicy.SYNCHRONIZED),
-        
-        # Gaussian fit channels - synchronized (arrive together)
-        ColumnDefinition(
-            name="X centroid (mm)",
-            channel_path=IC256_45_PATHS["adc"]["gaussian_fit_a_mean"],
-            policy=ChannelPolicy.SYNCHRONIZED,
-        ),
-        ColumnDefinition(
-            name="X sigma (mm)",
-            channel_path=IC256_45_PATHS["adc"]["gaussian_fit_a_sigma"],
-            policy=ChannelPolicy.SYNCHRONIZED,
-        ),
-        ColumnDefinition(
-            name="Y centroid (mm)",
-            channel_path=IC256_45_PATHS["adc"]["gaussian_fit_b_mean"],
-            policy=ChannelPolicy.SYNCHRONIZED,
-        ),
-        ColumnDefinition(
-            name="Y sigma (mm)",
-            channel_path=IC256_45_PATHS["adc"]["gaussian_fit_b_sigma"],
-            policy=ChannelPolicy.SYNCHRONIZED,
-        ),
-        
-        # Primary dose - interpolated (may have different rate)
-        ColumnDefinition(
-            name="Dose",
-            channel_path=IC256_45_PATHS["adc"]["primary_dose"],
-            policy=ChannelPolicy.INTERPOLATED,
-        ),
-        
-        # Channel sum - synchronized (arrives with gaussian)
-        ColumnDefinition(
-            name="Channel Sum",
-            channel_path=IC256_45_PATHS["adc"]["channel_sum"],
-            policy=ChannelPolicy.SYNCHRONIZED,
-        ),
-        
-        # External trigger - asynchronous (snap to nearest)
-        ColumnDefinition(
-            name="External trigger",
-            channel_path=IC256_45_PATHS["adc"]["gate_signal"],
-            policy=ChannelPolicy.ASYNCHRONOUS,
-        ),
-        
-        # Environment channels - interpolated (slow updates)
-        ColumnDefinition(
-            name="Temperature (℃)",
-            channel_path=IC256_45_PATHS["environmental_sensor"]["temperature"],
-            policy=ChannelPolicy.INTERPOLATED,
-        ),
-        ColumnDefinition(
-            name="Humidity (%rH)",
-            channel_path=IC256_45_PATHS["environmental_sensor"]["humidity"],
-            policy=ChannelPolicy.INTERPOLATED,
-        ),
-        ColumnDefinition(
-            name="Pressure (hPa)",
-            channel_path=IC256_45_PATHS["environmental_sensor"]["pressure"],
-            policy=ChannelPolicy.INTERPOLATED,
-        ),
-        
-        # Note is computed, not from a channel
-        ColumnDefinition(name="Note", channel_path=None, policy=ChannelPolicy.SYNCHRONIZED),
-    ]
-    
-    return columns
 
 
 def create_tx2_columns(

@@ -11,11 +11,6 @@ import threading
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 from .virtual_database import VirtualDatabase, VirtualRow
-from .data_collection import (
-    write_row,
-    process_gaussian_values,
-    ERROR_VALUE,
-)
 
 
 class CSVWriter:
@@ -29,10 +24,7 @@ class CSVWriter:
         virtual_database: The VirtualDatabase to write
         file_path: Path to the CSV file
         device_name: Name of the device (for header formatting)
-        environment: Environment data [temperature, humidity, pressure]
         note: Note string to include in each row
-        primary_units: Units for primary dose channel
-        probe_units: Units for probe channels (TX2 only)
         rows_written: Number of rows written to file
         file_size: Current file size in bytes
     """
@@ -42,7 +34,6 @@ class CSVWriter:
         virtual_database: VirtualDatabase,
         file_path: str,
         device_name: str,
-        environment: List[str],
         note: str,
     ):
         """Initialize CSV writer.
@@ -51,13 +42,11 @@ class CSVWriter:
             virtual_database: VirtualDatabase to write (defines headers and columns)
             file_path: Path to CSV file
             device_name: Name of the device (e.g., "ic256_45", "tx2")
-            environment: Environment data [temperature, humidity, pressure]
             note: Note string to include in each row
         """
         self.virtual_database = virtual_database
         self.file_path = Path(file_path)
         self.device_name = device_name
-        self.environment = environment
         self.note = note
         self.rows_written: int = 0
         self.file_size: int = 0
@@ -162,34 +151,16 @@ class CSVWriter:
             elif col_def.name == "Note":
                 # Note is provided
                 result.append(self.note)
-            elif "X centroid" in col_def.name or "X sigma" in col_def.name or \
-                 "Y centroid" in col_def.name or "Y sigma" in col_def.name:
-                # Gaussian fields - process and convert to mm
+            else:
+                # All other columns - use value from row_data
+                # VirtualDatabase handles all the data collection, interpolation, and conversion
                 value = row_data.get(col_def.name)
                 if value is None:
-                    result.append(ERROR_VALUE)
+                    # Fill missing values with empty string
+                    # Converters should handle error values (e.g., ERROR_GAUSS from IC256Model)
+                    result.append("")
                 else:
                     result.append(value)
-            elif "Dose" in col_def.name:
-                # Primary dose - may need units appended to name
-                value = row_data.get(col_def.name)
-                result.append(value if value is not None else "")
-            elif col_def.name in ["Temperature (℃)", "Humidity (%rH)", "Pressure (hPa)"]:
-                # Environment - use provided values
-                env_map = {
-                    "Temperature (℃)": 0,
-                    "Humidity (%rH)": 1,
-                    "Pressure (hPa)": 2,
-                }
-                idx = env_map.get(col_def.name, -1)
-                if idx >= 0 and idx < len(self.environment):
-                    result.append(self.environment[idx])
-                else:
-                    result.append(row_data.get(col_def.name, ""))
-            else:
-                # Other channels - use value from row_data
-                value = row_data.get(col_def.name)
-                result.append(value if value is not None else "")
         
         return result
     
@@ -197,27 +168,10 @@ class CSVWriter:
         """Write a single row to CSV.
         
         Args:
-            row_data: List of values in column order
+            row_data: List of values in column order (already converted by VirtualDatabase)
         """
-        if "ic256" in self.device_name.lower():
-            # IC256: Process gaussian values (first 4 fields)
-            if len(row_data) >= 5:
-                x_mean, x_sigma, y_mean, y_sigma = process_gaussian_values(
-                    row_data[1], row_data[2], row_data[3], row_data[4]
-                )
-                # Replace gaussian fields with processed values
-                row = (
-                    [row_data[0]] +  # Timestamp
-                    [x_mean, x_sigma, y_mean, y_sigma] +  # Processed gaussian
-                    row_data[5:]  # Rest of data
-                )
-            else:
-                row = row_data
-        else:
-            # TX2: Just write data as-is
-            row = row_data
-        
-        self._writer.writerow(row)
+        # VirtualDatabase already handles all conversions, so just write the row
+        self._writer.writerow(row_data)
     
     def flush(self) -> None:
         """Flush file buffer to disk."""

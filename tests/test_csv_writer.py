@@ -10,7 +10,11 @@ import tempfile
 import os
 from pathlib import Path
 from ic256_sampler.io_database import IODatabase
-from ic256_sampler.virtual_database import VirtualDatabase
+from ic256_sampler.virtual_database import (
+    VirtualDatabase,
+    ColumnDefinition,
+    ChannelPolicy,
+)
 from ic256_sampler.csv_writer import CSVWriter
 
 
@@ -20,14 +24,17 @@ class TestCSVWriter:
     def test_create_csv_writer(self, tmp_path):
         """Test creating a CSV writer."""
         io_db = IODatabase()
-        virtual_db = VirtualDatabase(io_db, "/test/channel_sum", 3000)
+        columns = [
+            ColumnDefinition(name="Timestamp (s)", channel_path=None, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Channel Sum", channel_path="/test/channel_sum", policy=ChannelPolicy.SYNCHRONIZED),
+        ]
+        virtual_db = VirtualDatabase(io_db, "/test/channel_sum", 3000, columns)
         file_path = tmp_path / "test.csv"
         
         writer = CSVWriter(
             virtual_database=virtual_db,
             file_path=str(file_path),
             device_name="ic256_45",
-            environment=["20.0", "50.0", "1013.25"],
             note="Test",
         )
         
@@ -39,14 +46,17 @@ class TestCSVWriter:
     def test_write_empty_database(self, tmp_path):
         """Test writing an empty virtual database."""
         io_db = IODatabase()
-        virtual_db = VirtualDatabase(io_db, "/test/channel_sum", 3000)
+        columns = [
+            ColumnDefinition(name="Timestamp (s)", channel_path=None, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Channel Sum", channel_path="/test/channel_sum", policy=ChannelPolicy.SYNCHRONIZED),
+        ]
+        virtual_db = VirtualDatabase(io_db, "/test/channel_sum", 3000, columns)
         file_path = tmp_path / "test.csv"
         
         writer = CSVWriter(
             virtual_database=virtual_db,
             file_path=str(file_path),
             device_name="ic256_45",
-            environment=["", "", ""],
             note="Test",
         )
         
@@ -73,7 +83,11 @@ class TestCSVWriter:
         io_db.add_data_point(channel_path, 100, timestamp1)
         io_db.add_data_point(channel_path, 200, timestamp2)
         
-        virtual_db = VirtualDatabase(io_db, channel_path, 10)  # 10 Hz
+        columns = [
+            ColumnDefinition(name="Timestamp (s)", channel_path=None, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Channel Sum", channel_path=channel_path, policy=ChannelPolicy.SYNCHRONIZED),
+        ]
+        virtual_db = VirtualDatabase(io_db, channel_path, 10, columns)  # 10 Hz
         virtual_db.build()
         
         file_path = tmp_path / "test.csv"
@@ -81,7 +95,6 @@ class TestCSVWriter:
             virtual_database=virtual_db,
             file_path=str(file_path),
             device_name="ic256_45",
-            environment=["", "", ""],
             note="Test",
         )
         
@@ -111,7 +124,12 @@ class TestCSVWriter:
         io_db.add_data_point(channel2, 50, timestamp1)
         io_db.add_data_point(channel2, 60, timestamp2)
         
-        virtual_db = VirtualDatabase(io_db, channel1, 10)
+        columns = [
+            ColumnDefinition(name="Timestamp (s)", channel_path=None, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Channel Sum", channel_path=channel1, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Primary Dose", channel_path=channel2, policy=ChannelPolicy.INTERPOLATED),
+        ]
+        virtual_db = VirtualDatabase(io_db, channel1, 10, columns)
         virtual_db.build()
         
         file_path = tmp_path / "test.csv"
@@ -119,7 +137,6 @@ class TestCSVWriter:
             virtual_database=virtual_db,
             file_path=str(file_path),
             device_name="ic256_45",
-            environment=["20.0", "50.0", "1013.25"],
             note="Test",
         )
         
@@ -155,7 +172,11 @@ class TestCSVWriter:
         io_db.add_data_point(channel_path, 100, timestamp1)
         io_db.add_data_point(channel_path, 200, timestamp2)
         
-        virtual_db = VirtualDatabase(io_db, channel_path, 10)
+        columns = [
+            ColumnDefinition(name="Timestamp (s)", channel_path=None, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Channel Sum", channel_path=channel_path, policy=ChannelPolicy.SYNCHRONIZED),
+        ]
+        virtual_db = VirtualDatabase(io_db, channel_path, 10, columns)
         virtual_db.build()
         
         file_path = tmp_path / "test.csv"
@@ -163,7 +184,6 @@ class TestCSVWriter:
             virtual_database=virtual_db,
             file_path=str(file_path),
             device_name="ic256_45",
-            environment=["", "", ""],
             note="Test",
         )
         
@@ -188,7 +208,11 @@ class TestCSVWriter:
         
         io_db.add_data_point(channel_path, 100, 1000000000000000000)
         
-        virtual_db = VirtualDatabase(io_db, channel_path, 10)
+        columns = [
+            ColumnDefinition(name="Timestamp (s)", channel_path=None, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Channel Sum", channel_path=channel_path, policy=ChannelPolicy.SYNCHRONIZED),
+        ]
+        virtual_db = VirtualDatabase(io_db, channel_path, 10, columns)
         virtual_db.build()
         
         file_path = tmp_path / "test.csv"
@@ -196,7 +220,6 @@ class TestCSVWriter:
             virtual_database=virtual_db,
             file_path=str(file_path),
             device_name="ic256_45",
-            environment=["", "", ""],
             note="Test",
         )
         
@@ -215,7 +238,11 @@ class TestCSVWriter:
         
         io_db.add_data_point(channel_path, 100, 1000000000000000000)
         
-        virtual_db = VirtualDatabase(io_db, channel_path, 10)
+        columns = [
+            ColumnDefinition(name="Timestamp (s)", channel_path=None, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Channel Sum", channel_path=channel_path, policy=ChannelPolicy.SYNCHRONIZED),
+        ]
+        virtual_db = VirtualDatabase(io_db, channel_path, 10, columns)
         virtual_db.build()
         
         file_path = tmp_path / "test.csv"
@@ -223,7 +250,6 @@ class TestCSVWriter:
             virtual_database=virtual_db,
             file_path=str(file_path),
             device_name="ic256_45",
-            environment=["", "", ""],
             note="Test",
         )
         
@@ -241,7 +267,11 @@ class TestCSVWriter:
         
         io_db.add_data_point(channel_path, 100, 1000000000000000000)
         
-        virtual_db = VirtualDatabase(io_db, channel_path, 10)
+        columns = [
+            ColumnDefinition(name="Timestamp (s)", channel_path=None, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Channel Sum", channel_path=channel_path, policy=ChannelPolicy.SYNCHRONIZED),
+        ]
+        virtual_db = VirtualDatabase(io_db, channel_path, 10, columns)
         virtual_db.build()
         
         file_path = tmp_path / "test.csv"
@@ -249,7 +279,6 @@ class TestCSVWriter:
             virtual_database=virtual_db,
             file_path=str(file_path),
             device_name="ic256_45",
-            environment=["", "", ""],
             note="Test",
         )
         
@@ -274,7 +303,11 @@ class TestCSVWriter:
         for i in range(100):
             io_db.add_data_point(channel_path, 100 + i, timestamp1 + int(i * 1e8))
         
-        virtual_db = VirtualDatabase(io_db, channel_path, 10)
+        columns = [
+            ColumnDefinition(name="Timestamp (s)", channel_path=None, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Channel Sum", channel_path=channel_path, policy=ChannelPolicy.SYNCHRONIZED),
+        ]
+        virtual_db = VirtualDatabase(io_db, channel_path, 10, columns)
         virtual_db.build()
         
         file_path = tmp_path / "test.csv"
@@ -282,7 +315,6 @@ class TestCSVWriter:
             virtual_database=virtual_db,
             file_path=str(file_path),
             device_name="ic256_45",
-            environment=["", "", ""],
             note="Test",
         )
         
@@ -309,7 +341,11 @@ class TestCSVWriter:
         for i in range(50):
             io_db.add_data_point(channel_path, 100 + i, timestamp1 + int(i * 1e8))
         
-        virtual_db = VirtualDatabase(io_db, channel_path, 10)
+        columns = [
+            ColumnDefinition(name="Timestamp (s)", channel_path=None, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Channel Sum", channel_path=channel_path, policy=ChannelPolicy.SYNCHRONIZED),
+        ]
+        virtual_db = VirtualDatabase(io_db, channel_path, 10, columns)
         virtual_db.build()
         
         initial_row_count = virtual_db.get_row_count()
@@ -319,7 +355,6 @@ class TestCSVWriter:
             virtual_database=virtual_db,
             file_path=str(file_path),
             device_name="ic256_45",
-            environment=["", "", ""],
             note="Test",
         )
         
@@ -348,6 +383,7 @@ class TestCSVWriterIntegration:
         from ic256_sampler.igx_client import IGXWebsocketClient
         from ic256_sampler.device_paths import IC256_45_PATHS
         from ic256_sampler.simple_capture import capture_to_database
+        from ic256_sampler.ic256_model import IC256Model
         
         # Skip if IP is invalid
         if not is_valid_ipv4(ic256_ip):
@@ -369,8 +405,9 @@ class TestCSVWriterIntegration:
         # Build virtual database
         reference_channel = IC256_45_PATHS["adc"]["channel_sum"]
         sampling_rate = 3000
+        columns = IC256Model.create_columns(reference_channel)
         
-        virtual_db = VirtualDatabase(io_db, reference_channel, sampling_rate)
+        virtual_db = VirtualDatabase(io_db, reference_channel, sampling_rate, columns)
         virtual_db.build()
         
         # Write to CSV
@@ -379,7 +416,6 @@ class TestCSVWriterIntegration:
             virtual_database=virtual_db,
             file_path=str(file_path),
             device_name="ic256_45",
-            environment=["20.0", "50.0", "1013.25"],
             note="Integration test",
         )
         
@@ -425,6 +461,7 @@ class TestCSVWriterIntegration:
         from ic256_sampler.igx_client import IGXWebsocketClient
         from ic256_sampler.device_paths import IC256_45_PATHS
         from ic256_sampler.simple_capture import capture_to_database
+        from ic256_sampler.ic256_model import IC256Model
         
         # Skip if IP is invalid
         if not is_valid_ipv4(ic256_ip):
@@ -440,7 +477,9 @@ class TestCSVWriterIntegration:
         io_db = capture_to_database(client, channel_paths, duration=1.0)
         
         # Build virtual database
-        virtual_db = VirtualDatabase(io_db, channel_paths[0], 3000)
+        reference_channel = channel_paths[0]
+        columns = IC256Model.create_columns(reference_channel)
+        virtual_db = VirtualDatabase(io_db, reference_channel, 3000, columns)
         virtual_db.build()
         
         file_path = tmp_path / "test_incremental.csv"
@@ -448,7 +487,6 @@ class TestCSVWriterIntegration:
             virtual_database=virtual_db,
             file_path=str(file_path),
             device_name="ic256_45",
-            environment=["", "", ""],
             note="Test",
         )
         
