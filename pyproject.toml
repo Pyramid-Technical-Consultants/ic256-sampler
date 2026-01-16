@@ -37,6 +37,7 @@ dependencies = [
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
+    "pytest-mock>=3.11.0",
     "ruff>=0.1.0",
     "mypy>=1.5.0",
     "black>=23.0.0",
@@ -55,7 +56,6 @@ Repository = "https://github.com/yourusername/ic256-sampler"
 
 [tool.setuptools]
 packages = ["ic256_sampler"]
-package-data = {"ic256_sampler" = ["assets/**/*"]}
 
 [tool.setuptools.package-data]
 ic256_sampler = ["assets/**/*"]
@@ -106,6 +106,9 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --cov=ic256_sampler --cov-report=term-missing"
+markers = [
+    "integration: marks tests as integration tests (require live devices)",
+]
 
 [tool.black]
 line-length = 100
