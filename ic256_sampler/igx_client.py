@@ -46,6 +46,10 @@ class IGXField:
 
     def getDatums(self):
         return self.datums
+    
+    def clearDatums(self):
+        """Clear the datums list after reading to avoid re-processing old data."""
+        self.datums = []
 
     def getValue(self):
         return self.datum[0]

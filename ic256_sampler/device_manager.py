@@ -211,15 +211,19 @@ class DeviceManager:
             self.stop_event.clear()
             self._running = True
             
-            # Start all threads
+            # Start all threads (only if not already started)
             for connection in self.connections.values():
-                connection.thread.start()
+                if not connection.thread.is_alive():
+                    connection.thread.start()
     
     def stop(self) -> None:
         """Stop all device connections and data collection.
         
         Note: This does NOT close the websocket connections - they are kept alive
         for reuse between acquisitions. Connections persist for the entire program lifecycle.
+        
+        Note: This does NOT clear the database - the caller should clear it after
+        processing is complete to avoid losing data that's still being processed.
         """
         with self._lock:
             if not self._running:
@@ -233,8 +237,8 @@ class DeviceManager:
                 if connection.thread.is_alive():
                     connection.thread.join(timeout=5.0)
             
-            # Clear the database for next acquisition
-            self.io_database.clear()
+            # NOTE: Database is NOT cleared here - caller should clear it after
+            # processing is complete to avoid losing data that's still being processed
     
     def close_all_connections(self) -> None:
         """Close all websocket connections.
@@ -516,6 +520,10 @@ class DeviceManager:
                     with self._lock:
                         for ch_path, val, ts in points_to_add:
                             self.io_database.add_data_point(ch_path, val, ts)
+                    
+                    # Clear datums after processing to avoid re-reading the same data
+                    # This is safe because we've already processed all the data points
+                    channel.clearDatums()
                         
             except Exception as e:
                 print(f"Error collecting data from {field_name}: {e}")
