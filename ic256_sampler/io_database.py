@@ -7,23 +7,39 @@ and can be queried for data reconstruction and validation.
 
 import time
 import bisect
+import sys
 from typing import Dict, List, Tuple, Optional, Any, Set
 from collections import deque
 from dataclasses import dataclass, field
 
 
-@dataclass
-class DataPoint:
-    """A single data point from a channel.
-    
-    Attributes:
-        value: The data value (can be any type)
-        timestamp_ns: Timestamp in nanoseconds since 1970
-        elapsed_time: Elapsed time in seconds since first timestamp
-    """
-    value: Any
-    timestamp_ns: int
-    elapsed_time: float = 0.0
+# Use slots=True for Python 3.10+ for better performance
+if sys.version_info >= (3, 10):
+    @dataclass(slots=True)
+    class DataPoint:
+        """A single data point from a channel.
+        
+        Attributes:
+            value: The data value (can be any type)
+            timestamp_ns: Timestamp in nanoseconds since 1970
+            elapsed_time: Elapsed time in seconds since first timestamp
+        """
+        value: Any
+        timestamp_ns: int
+        elapsed_time: float = 0.0
+else:
+    @dataclass
+    class DataPoint:
+        """A single data point from a channel.
+        
+        Attributes:
+            value: The data value (can be any type)
+            timestamp_ns: Timestamp in nanoseconds since 1970
+            elapsed_time: Elapsed time in seconds since first timestamp
+        """
+        value: Any
+        timestamp_ns: int
+        elapsed_time: float = 0.0
 
 
 @dataclass

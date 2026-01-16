@@ -122,11 +122,45 @@ class VirtualDatabase:
         """
         return [col.name for col in self.columns]
     
+    def _is_primed(self) -> bool:
+        """Check if all channels have at least one data point (primed).
+        
+        Only checks channels that actually exist in the IODatabase.
+        If a channel path is in column definitions but not in IODatabase
+        (e.g., not subscribed/collected), it's skipped for priming.
+        
+        Returns:
+            True if all channels with channel_path that exist in IODatabase
+            have at least one data point, False otherwise.
+        """
+        # Get all unique channel paths from column definitions
+        channel_paths = set()
+        for col_def in self.columns:
+            if col_def.channel_path is not None:
+                channel_paths.add(col_def.channel_path)
+        
+        # Get all channels that actually exist in the IODatabase
+        existing_channels = self.io_database.get_all_channels()
+        
+        # Check that each channel that exists in IODatabase has at least one data point
+        for channel_path in channel_paths:
+            # Only check channels that actually exist in IODatabase
+            if channel_path not in existing_channels:
+                continue  # Skip channels that don't exist (not subscribed/collected)
+            
+            channel_data = self.io_database.get_channel(channel_path)
+            if not channel_data or channel_data.count == 0:
+                return False
+        
+        return True
+    
     def build(self) -> None:
         """Build the virtual database by creating rows at regular intervals.
         
         Uses the reference channel to determine the time range, then creates
         rows at regular intervals (1/sampling_rate) for all channels.
+        
+        Will not create rows until all channels have at least one data point (primed).
         """
         if self._built:
             return
@@ -139,6 +173,10 @@ class VirtualDatabase:
         ref_channel = self.io_database.get_channel(self.reference_channel)
         if not ref_channel or ref_channel.count == 0:
             return  # No data to build from
+        
+        # Check if all channels are primed (have at least one data point)
+        if not self._is_primed():
+            return  # Not all channels have data yet, wait for priming
         
         # Cache reference channel
         self._ref_channel_cache = ref_channel
@@ -210,73 +248,177 @@ class VirtualDatabase:
         ref_tolerance = row_interval * 0.5
         interp_tolerance = row_interval * 2.0
         
+        # Track last known values for forward-fill (for INTERPOLATED channels)
+        last_known_values: Dict[str, Any] = {}
+        
         while current_time <= last_elapsed:
             # Find reference point using optimized incremental search
-            # Since rows are sequential, we can do a forward linear scan from last position
-            # This is faster than binary search for sequential access patterns
-            ref_point = None
+            # Use binary search with incremental start position for better performance
+            ref_timestamp_ns = None
             if ref_snapshot and ref_elapsed_times:
-                # Start from last known position and scan forward
-                # This is O(1) amortized for sequential access
-                while ref_search_idx < len(ref_elapsed_times):
-                    elapsed = ref_elapsed_times[ref_search_idx]
-                    if elapsed >= current_time - ref_tolerance:
-                        # Found a candidate - check if it's within tolerance
-                        if abs(elapsed - current_time) <= ref_tolerance:
-                            point = ref_snapshot[ref_search_idx]
-                            ref_point = (point.value, point.elapsed_time, point.timestamp_ns)
-                            break
-                        elif elapsed > current_time + ref_tolerance:
-                            # Gone too far, check previous point
-                            if ref_search_idx > 0:
-                                prev_elapsed = ref_elapsed_times[ref_search_idx - 1]
-                                if abs(prev_elapsed - current_time) <= ref_tolerance:
-                                    point = ref_snapshot[ref_search_idx - 1]
-                                    ref_point = (point.value, point.elapsed_time, point.timestamp_ns)
-                                    ref_search_idx -= 1
-                            break
-                    ref_search_idx += 1
+                # Use binary search starting from last known position
+                idx = bisect.bisect_left(ref_elapsed_times, current_time, lo=ref_search_idx)
+                # Check both candidates (idx and idx-1) for closest match
+                best_idx = None
+                best_diff = ref_tolerance + 1.0
                 
-                # Fallback to binary search if linear scan didn't find it
-                if ref_point is None and ref_search_idx >= len(ref_elapsed_times):
-                    # Reset and use binary search
-                    idx = bisect.bisect_left(ref_elapsed_times, current_time)
-                    if idx < len(ref_snapshot):
-                        point = ref_snapshot[idx]
-                        if abs(point.elapsed_time - current_time) <= ref_tolerance:
-                            ref_point = (point.value, point.elapsed_time, point.timestamp_ns)
-                            ref_search_idx = idx
-                    if ref_point is None and idx > 0:
-                        point = ref_snapshot[idx - 1]
-                        if abs(point.elapsed_time - current_time) <= ref_tolerance:
-                            ref_point = (point.value, point.elapsed_time, point.timestamp_ns)
-                            ref_search_idx = idx - 1
+                if idx < len(ref_elapsed_times):
+                    diff = abs(ref_elapsed_times[idx] - current_time)
+                    if diff <= ref_tolerance and diff < best_diff:
+                        best_diff = diff
+                        best_idx = idx
+                
+                if idx > 0:
+                    diff = abs(ref_elapsed_times[idx - 1] - current_time)
+                    if diff <= ref_tolerance and diff < best_diff:
+                        best_diff = diff
+                        best_idx = idx - 1
+                
+                if best_idx is not None:
+                    point = ref_snapshot[best_idx]
+                    ref_timestamp_ns = point.timestamp_ns
+                    ref_search_idx = best_idx
+                else:
+                    # No match found, advance search index to avoid rechecking
+                    ref_search_idx = max(0, idx - 1)
             
-            ref_timestamp_ns = ref_point[2] if ref_point else None
-            
-            # Process columns (inlined for speed)
+            # Process columns (fully inlined for speed)
             # Pre-allocate dictionary with known size to avoid rehashing
             row_data = dict.fromkeys((col_name for col_name, _, _, _, _, _ in column_data), None)
             
+            # Inline all policy-specific matching to avoid function call overhead
             for col_name, col_policy, converter, snapshot, elapsed_times, timestamps in column_data:
                 if snapshot is None:
-                    continue  # Already set to None
+                    continue
                 
-                # Apply policy-specific matching (use cached policy enum)
                 raw_value = None
-                if col_policy == ChannelPolicy.SYNCHRONIZED:
-                    raw_value = self._find_synchronized_fast(snapshot, timestamps, ref_timestamp_ns)
-                elif col_policy == ChannelPolicy.INTERPOLATED:
-                    raw_value = self._interpolate_fast(snapshot, elapsed_times, current_time, interp_tolerance)
-                elif col_policy == ChannelPolicy.ASYNCHRONOUS:
-                    raw_value = self._find_nearest_fast(snapshot, elapsed_times, current_time, interp_tolerance)
                 
-                # Apply converter (use cached converter function)
+                # Inline SYNCHRONIZED policy
+                if col_policy == ChannelPolicy.SYNCHRONIZED:
+                    if ref_timestamp_ns is not None and timestamps:
+                        if len(snapshot) < 50:
+                            # Linear search for small datasets
+                            for i, point in enumerate(snapshot):
+                                if abs(timestamps[i] - ref_timestamp_ns) <= 1000:
+                                    raw_value = point.value
+                                    break
+                        else:
+                            # Binary search for larger datasets
+                            ts_idx = bisect.bisect_left(timestamps, ref_timestamp_ns)
+                            for i in [ts_idx, ts_idx - 1, ts_idx + 1]:
+                                if 0 <= i < len(snapshot):
+                                    if abs(timestamps[i] - ref_timestamp_ns) <= 1000:
+                                        raw_value = snapshot[i].value
+                                        break
+                
+                # Inline INTERPOLATED policy
+                elif col_policy == ChannelPolicy.INTERPOLATED:
+                    if elapsed_times:
+                        if len(snapshot) < 50:
+                            # Linear search for small datasets
+                            before_point = None
+                            after_point = None
+                            before_diff = float('inf')
+                            after_diff = float('inf')
+                            for i, point in enumerate(snapshot):
+                                diff = elapsed_times[i] - current_time
+                                if diff <= 0 and abs(diff) < before_diff:
+                                    before_point = point
+                                    before_diff = abs(diff)
+                                elif diff > 0 and diff < after_diff:
+                                    after_point = point
+                                    after_diff = diff
+                            
+                            if before_point and after_point:
+                                t1, v1 = before_point.elapsed_time, before_point.value
+                                t2, v2 = after_point.elapsed_time, after_point.value
+                                if abs(t2 - t1) >= 1e-9:
+                                    try:
+                                        if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
+                                            raw_value = v1 + (v2 - v1) * (current_time - t1) / (t2 - t1)
+                                        else:
+                                            raw_value = v1 if abs(current_time - t1) < abs(current_time - t2) else v2
+                                    except (TypeError, ValueError):
+                                        raw_value = v1
+                                else:
+                                    raw_value = v1
+                            elif before_point:
+                                raw_value = before_point.value
+                            elif after_point:
+                                raw_value = after_point.value
+                        else:
+                            # Binary search for larger datasets
+                            idx = bisect.bisect_left(elapsed_times, current_time)
+                            before_idx = idx - 1
+                            after_idx = idx
+                            before_valid = before_idx >= 0 and abs(elapsed_times[before_idx] - current_time) <= interp_tolerance
+                            after_valid = after_idx < len(snapshot) and abs(elapsed_times[after_idx] - current_time) <= interp_tolerance
+                            
+                            if before_valid and after_valid:
+                                before_point = snapshot[before_idx]
+                                after_point = snapshot[after_idx]
+                                t1, v1 = before_point.elapsed_time, before_point.value
+                                t2, v2 = after_point.elapsed_time, after_point.value
+                                if abs(t2 - t1) >= 1e-9:
+                                    try:
+                                        if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
+                                            raw_value = v1 + (v2 - v1) * (current_time - t1) / (t2 - t1)
+                                        else:
+                                            raw_value = v1 if abs(current_time - t1) < abs(current_time - t2) else v2
+                                    except (TypeError, ValueError):
+                                        raw_value = v1
+                                else:
+                                    raw_value = v1
+                            elif before_valid:
+                                raw_value = snapshot[before_idx].value
+                            elif after_valid:
+                                raw_value = snapshot[after_idx].value
+                
+                # Inline ASYNCHRONOUS policy
+                elif col_policy == ChannelPolicy.ASYNCHRONOUS:
+                    if elapsed_times:
+                        if len(snapshot) < 50:
+                            # Linear search for small datasets
+                            closest = None
+                            min_diff = float('inf')
+                            for i, point in enumerate(snapshot):
+                                diff = abs(elapsed_times[i] - current_time)
+                                if diff < min_diff and diff <= interp_tolerance:
+                                    min_diff = diff
+                                    closest = point.value
+                            raw_value = closest
+                        else:
+                            # Binary search for larger datasets
+                            idx = bisect.bisect_left(elapsed_times, current_time)
+                            closest = None
+                            min_diff = float('inf')
+                            
+                            if idx < len(snapshot):
+                                diff = abs(elapsed_times[idx] - current_time)
+                                if diff < min_diff and diff <= interp_tolerance:
+                                    min_diff = diff
+                                    closest = snapshot[idx].value
+                            
+                            if idx > 0:
+                                diff = abs(elapsed_times[idx - 1] - current_time)
+                                if diff < min_diff and diff <= interp_tolerance:
+                                    closest = snapshot[idx - 1].value
+                            
+                            raw_value = closest
+                
+                # Apply converter
                 if raw_value is not None:
                     try:
-                        row_data[col_name] = converter(raw_value)
+                        converted_value = converter(raw_value)
+                        row_data[col_name] = converted_value
+                        # Update last known value for forward-fill
+                        if col_policy == ChannelPolicy.INTERPOLATED:
+                            last_known_values[col_name] = converted_value
                     except Exception:
-                        pass  # Already None
+                        pass
+                elif col_policy == ChannelPolicy.INTERPOLATED and col_name in last_known_values:
+                    # Forward-fill: use last known value if interpolation failed
+                    row_data[col_name] = last_known_values[col_name]
             
             # Create virtual row
             if row_idx < len(self.rows):
@@ -1192,6 +1334,8 @@ class VirtualDatabase:
         
         This method is incremental - it only builds new rows since the last build,
         making it much more efficient than a full rebuild.
+        
+        Will not create rows until all channels have at least one data point (primed).
         """
         # Use cached reference channel if available, otherwise get it
         if self._ref_channel_cache is None:
@@ -1214,8 +1358,13 @@ class VirtualDatabase:
         # If not built yet, do a full build
         if not self._built or self._last_built_time is None:
             self.clear()
-            self.build()
+            self.build()  # build() will check for priming
             return
+        
+        # Check if all channels are primed (have at least one data point)
+        # This is important for incremental rebuilds - we may have started before all channels had data
+        if not self._is_primed():
+            return  # Not all channels have data yet, wait for priming
         
         # If no new data, skip (with small tolerance for floating point)
         if last_elapsed <= self._last_built_time + 1e-9:
@@ -1285,73 +1434,188 @@ class VirtualDatabase:
         ref_tolerance = row_interval * 0.5
         interp_tolerance = row_interval * 2.0
         
+        # Track last known values for forward-fill (for INTERPOLATED channels)
+        # Initialize from existing rows if available
+        last_known_values: Dict[str, Any] = {}
+        if self.rows:
+            # Get last known values from the last row
+            last_row = self.rows[-1]
+            for col_name, col_policy, _, _, _, _ in column_data:
+                if col_policy == ChannelPolicy.INTERPOLATED and col_name in last_row.data:
+                    value = last_row.data[col_name]
+                    if value is not None:
+                        last_known_values[col_name] = value
+        
         current_time = start_time
         last_row_time = self._last_built_time
         while current_time <= last_elapsed and rows_built < max_rows_per_rebuild:
             # Find reference point using optimized incremental search
-            # Since rows are sequential, we can do a forward linear scan from last position
-            ref_point = None
+            # Use binary search with incremental start position for better performance
+            ref_timestamp_ns = None
             if ref_snapshot and ref_elapsed_times:
-                # Start from last known position and scan forward
-                while ref_search_idx < len(ref_elapsed_times):
-                    elapsed = ref_elapsed_times[ref_search_idx]
-                    if elapsed >= current_time - ref_tolerance:
-                        # Found a candidate - check if it's within tolerance
-                        if abs(elapsed - current_time) <= ref_tolerance:
-                            point = ref_snapshot[ref_search_idx]
-                            ref_point = (point.value, point.elapsed_time, point.timestamp_ns)
-                            break
-                        elif elapsed > current_time + ref_tolerance:
-                            # Gone too far, check previous point
-                            if ref_search_idx > 0:
-                                prev_elapsed = ref_elapsed_times[ref_search_idx - 1]
-                                if abs(prev_elapsed - current_time) <= ref_tolerance:
-                                    point = ref_snapshot[ref_search_idx - 1]
-                                    ref_point = (point.value, point.elapsed_time, point.timestamp_ns)
-                                    ref_search_idx -= 1
-                            break
-                    ref_search_idx += 1
+                # Use binary search starting from last known position
+                idx = bisect.bisect_left(ref_elapsed_times, current_time, lo=ref_search_idx)
+                # Check both candidates (idx and idx-1) for closest match
+                best_idx = None
+                best_diff = ref_tolerance + 1.0
                 
-                # Fallback to binary search if linear scan didn't find it
-                if ref_point is None and ref_search_idx >= len(ref_elapsed_times):
-                    # Reset and use binary search
-                    idx = bisect.bisect_left(ref_elapsed_times, current_time)
-                    if idx < len(ref_snapshot):
-                        point = ref_snapshot[idx]
-                        if abs(point.elapsed_time - current_time) <= ref_tolerance:
-                            ref_point = (point.value, point.elapsed_time, point.timestamp_ns)
-                            ref_search_idx = idx
-                    if ref_point is None and idx > 0:
-                        point = ref_snapshot[idx - 1]
-                        if abs(point.elapsed_time - current_time) <= ref_tolerance:
-                            ref_point = (point.value, point.elapsed_time, point.timestamp_ns)
-                            ref_search_idx = idx - 1
+                if idx < len(ref_elapsed_times):
+                    diff = abs(ref_elapsed_times[idx] - current_time)
+                    if diff <= ref_tolerance and diff < best_diff:
+                        best_diff = diff
+                        best_idx = idx
+                
+                if idx > 0:
+                    diff = abs(ref_elapsed_times[idx - 1] - current_time)
+                    if diff <= ref_tolerance and diff < best_diff:
+                        best_diff = diff
+                        best_idx = idx - 1
+                
+                if best_idx is not None:
+                    point = ref_snapshot[best_idx]
+                    ref_timestamp_ns = point.timestamp_ns
+                    ref_search_idx = best_idx
+                else:
+                    # No match found, advance search index to avoid rechecking
+                    ref_search_idx = max(0, idx - 1)
             
-            ref_timestamp_ns = ref_point[2] if ref_point else None
-            
-            # Process columns (inlined for speed)
+            # Process columns (fully inlined for speed)
             # Pre-allocate dictionary with known size to avoid rehashing
             row_data = dict.fromkeys((col_name for col_name, _, _, _, _, _ in column_data), None)
             
+            # Inline all policy-specific matching to avoid function call overhead
             for col_name, col_policy, converter, snapshot, elapsed_times, timestamps in column_data:
                 if snapshot is None:
-                    continue  # Already set to None
+                    continue
                 
-                # Apply policy-specific matching (use cached policy enum)
                 raw_value = None
-                if col_policy == ChannelPolicy.SYNCHRONIZED:
-                    raw_value = self._find_synchronized_fast(snapshot, timestamps, ref_timestamp_ns)
-                elif col_policy == ChannelPolicy.INTERPOLATED:
-                    raw_value = self._interpolate_fast(snapshot, elapsed_times, current_time, interp_tolerance)
-                elif col_policy == ChannelPolicy.ASYNCHRONOUS:
-                    raw_value = self._find_nearest_fast(snapshot, elapsed_times, current_time, interp_tolerance)
                 
-                # Apply converter (use cached converter function)
+                # Inline SYNCHRONIZED policy
+                if col_policy == ChannelPolicy.SYNCHRONIZED:
+                    if ref_timestamp_ns is not None and timestamps:
+                        if len(snapshot) < 50:
+                            # Linear search for small datasets
+                            for i, point in enumerate(snapshot):
+                                if abs(timestamps[i] - ref_timestamp_ns) <= 1000:
+                                    raw_value = point.value
+                                    break
+                        else:
+                            # Binary search for larger datasets
+                            ts_idx = bisect.bisect_left(timestamps, ref_timestamp_ns)
+                            for i in [ts_idx, ts_idx - 1, ts_idx + 1]:
+                                if 0 <= i < len(snapshot):
+                                    if abs(timestamps[i] - ref_timestamp_ns) <= 1000:
+                                        raw_value = snapshot[i].value
+                                        break
+                
+                # Inline INTERPOLATED policy
+                elif col_policy == ChannelPolicy.INTERPOLATED:
+                    if elapsed_times:
+                        if len(snapshot) < 50:
+                            # Linear search for small datasets
+                            before_point = None
+                            after_point = None
+                            before_diff = float('inf')
+                            after_diff = float('inf')
+                            for i, point in enumerate(snapshot):
+                                diff = elapsed_times[i] - current_time
+                                if diff <= 0 and abs(diff) < before_diff:
+                                    before_point = point
+                                    before_diff = abs(diff)
+                                elif diff > 0 and diff < after_diff:
+                                    after_point = point
+                                    after_diff = diff
+                            
+                            if before_point and after_point:
+                                t1, v1 = before_point.elapsed_time, before_point.value
+                                t2, v2 = after_point.elapsed_time, after_point.value
+                                if abs(t2 - t1) >= 1e-9:
+                                    try:
+                                        if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
+                                            raw_value = v1 + (v2 - v1) * (current_time - t1) / (t2 - t1)
+                                        else:
+                                            raw_value = v1 if abs(current_time - t1) < abs(current_time - t2) else v2
+                                    except (TypeError, ValueError):
+                                        raw_value = v1
+                                else:
+                                    raw_value = v1
+                            elif before_point:
+                                raw_value = before_point.value
+                            elif after_point:
+                                raw_value = after_point.value
+                        else:
+                            # Binary search for larger datasets
+                            idx = bisect.bisect_left(elapsed_times, current_time)
+                            before_idx = idx - 1
+                            after_idx = idx
+                            before_valid = before_idx >= 0 and abs(elapsed_times[before_idx] - current_time) <= interp_tolerance
+                            after_valid = after_idx < len(snapshot) and abs(elapsed_times[after_idx] - current_time) <= interp_tolerance
+                            
+                            if before_valid and after_valid:
+                                before_point = snapshot[before_idx]
+                                after_point = snapshot[after_idx]
+                                t1, v1 = before_point.elapsed_time, before_point.value
+                                t2, v2 = after_point.elapsed_time, after_point.value
+                                if abs(t2 - t1) >= 1e-9:
+                                    try:
+                                        if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
+                                            raw_value = v1 + (v2 - v1) * (current_time - t1) / (t2 - t1)
+                                        else:
+                                            raw_value = v1 if abs(current_time - t1) < abs(current_time - t2) else v2
+                                    except (TypeError, ValueError):
+                                        raw_value = v1
+                                else:
+                                    raw_value = v1
+                            elif before_valid:
+                                raw_value = snapshot[before_idx].value
+                            elif after_valid:
+                                raw_value = snapshot[after_idx].value
+                
+                # Inline ASYNCHRONOUS policy
+                elif col_policy == ChannelPolicy.ASYNCHRONOUS:
+                    if elapsed_times:
+                        if len(snapshot) < 50:
+                            # Linear search for small datasets
+                            closest = None
+                            min_diff = float('inf')
+                            for i, point in enumerate(snapshot):
+                                diff = abs(elapsed_times[i] - current_time)
+                                if diff < min_diff and diff <= interp_tolerance:
+                                    min_diff = diff
+                                    closest = point.value
+                            raw_value = closest
+                        else:
+                            # Binary search for larger datasets
+                            idx = bisect.bisect_left(elapsed_times, current_time)
+                            closest = None
+                            min_diff = float('inf')
+                            
+                            if idx < len(snapshot):
+                                diff = abs(elapsed_times[idx] - current_time)
+                                if diff < min_diff and diff <= interp_tolerance:
+                                    min_diff = diff
+                                    closest = snapshot[idx].value
+                            
+                            if idx > 0:
+                                diff = abs(elapsed_times[idx - 1] - current_time)
+                                if diff < min_diff and diff <= interp_tolerance:
+                                    closest = snapshot[idx - 1].value
+                            
+                            raw_value = closest
+                
+                # Apply converter
                 if raw_value is not None:
                     try:
-                        row_data[col_name] = converter(raw_value)
+                        converted_value = converter(raw_value)
+                        row_data[col_name] = converted_value
+                        # Update last known value for forward-fill
+                        if col_policy == ChannelPolicy.INTERPOLATED:
+                            last_known_values[col_name] = converted_value
                     except Exception:
-                        pass  # Already None
+                        pass
+                elif col_policy == ChannelPolicy.INTERPOLATED and col_name in last_known_values:
+                    # Forward-fill: use last known value if interpolation failed
+                    row_data[col_name] = last_known_values[col_name]
             
             # Create virtual row
             self.rows.append(VirtualRow(timestamp=current_time, data=row_data))

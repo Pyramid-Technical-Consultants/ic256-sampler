@@ -218,6 +218,11 @@ class IC256Model:
             "primary_channel": IC256_45_PATHS["adc"]["primary_dose"],
             "channel_sum": IC256_45_PATHS["adc"]["channel_sum"],
             "external_trigger": IC256_45_PATHS["adc"]["gate_signal"],
+            # Environmental sensor channels (treated same as any other channel)
+            "temperature": IC256_45_PATHS["environmental_sensor"]["temperature"],
+            "humidity": IC256_45_PATHS["environmental_sensor"]["humidity"],
+            "pressure": IC256_45_PATHS["environmental_sensor"]["pressure"],
+            "env_connected": IC256_45_PATHS["environmental_sensor"]["state"],
         }
     
     @staticmethod

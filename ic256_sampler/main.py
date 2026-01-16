@@ -78,6 +78,7 @@ class Application:
         self.collector: Optional[ModelCollector] = None
         self.device_manager: Optional[DeviceManager] = None
         self.collector_thread: Optional[threading.Thread] = None
+        self._stopping = False  # Flag to track if we're in stopping mode
     
     def _get_gui_values(self) -> Tuple[str, str, str, str]:
         """Get values from GUI entries.
@@ -136,8 +137,23 @@ class Application:
             time.sleep(TIME_UPDATE_INTERVAL)
     
     def _update_statistics(self) -> None:
-        """Update statistics display (rows and file size) in GUI."""
-        while not self.stop_event.is_set():
+        """Update statistics display (rows and file size) in GUI.
+        
+        Continues updating even after stop_event is set, until collector thread finishes.
+        This ensures statistics are updated while data is being written to CSV after stop.
+        """
+        while True:
+            # Continue updating if:
+            # 1. Not stopped yet, OR
+            # 2. We're in stopping mode and collector thread is still alive (processing final data)
+            should_continue = (
+                not self.stop_event.is_set() or
+                (self._stopping and self.collector_thread and self.collector_thread.is_alive())
+            )
+            
+            if not should_continue:
+                break
+            
             if self.window and self.device_statistics:
                 # Aggregate statistics across all devices
                 total_rows = sum(stats.get("rows", 0) for stats in self.device_statistics.values())
@@ -367,14 +383,17 @@ class Application:
         
         This method:
         1. Stops new data collection (sets stop_event, stops DeviceManager)
-        2. Waits for collector thread to finish processing all collected data
+        2. Uses non-blocking approach to wait for collector thread to finish
         3. Only re-enables start button after all data is written to CSV
+        
+        Uses GUI after() callbacks to avoid freezing the GUI thread.
         """
         if not self.window:
             return
         
         # Phase 1: Stop new data collection
         self.stop_event.set()
+        self._stopping = True  # Mark that we're stopping (allows stats to continue updating)
         
         # Stop DeviceManager (stops collecting new data from devices)
         if self.device_manager:
@@ -390,19 +409,34 @@ class Application:
             except Exception:
                 pass
         
-        # Phase 2: Wait for collector thread to finish processing all data
-        # The collector thread will continue processing until all data is written
+        # Phase 2: Use non-blocking approach to wait for collector thread
+        # Update GUI to show we're finishing up
+        show_message_safe(self.window, "Finishing data write...", "blue")
+        log_message_safe(self.window, "Stopped data collection, finishing CSV write...", "INFO")
+        
+        # Use after() callback to periodically check if thread is done (non-blocking)
+        self._check_collector_thread_finished()
+    
+    def _check_collector_thread_finished(self) -> None:
+        """Periodically check if collector thread is finished (non-blocking).
+        
+        Uses GUI after() callback to avoid blocking the GUI thread.
+        """
+        if not self.window:
+            return
+        
         if self.collector_thread and self.collector_thread.is_alive():
-            # Update GUI to show we're finishing up
-            show_message_safe(self.window, "Finishing data write...", "blue")
-            log_message_safe(self.window, "Stopped data collection, finishing CSV write...", "INFO")
-            
-            # Wait for thread to finish (with longer timeout for large datasets)
-            self.collector_thread.join(timeout=THREAD_JOIN_TIMEOUT * 2)
-            
-            if self.collector_thread.is_alive():
-                # Thread didn't finish in time - log warning but continue
-                log_message_safe(self.window, "Warning: CSV write took longer than expected", "WARNING")
+            # Thread still running - check again in 100ms (non-blocking)
+            self.window.root.after(100, self._check_collector_thread_finished)
+        else:
+            # Thread finished - complete cleanup
+            self._stopping = False
+            self._finalize_stop()
+    
+    def _finalize_stop(self) -> None:
+        """Finalize stop process after collector thread has finished."""
+        if not self.window:
+            return
         
         # Phase 3: Reset GUI - only enable start button after all work is done
         set_button_state_safe(self.window, "stop_button", "disabled")

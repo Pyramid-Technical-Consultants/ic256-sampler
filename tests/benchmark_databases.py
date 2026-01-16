@@ -428,86 +428,65 @@ class DatabaseBenchmark:
         return self._record_result("virtual_get_row_data", data_size, iterations, times)
     
     def run_all_benchmarks(self) -> List[BenchmarkResult]:
-        """Run all benchmarks with various data sizes."""
+        """Run all benchmarks with various data sizes.
+        
+        Optimized to complete in under 20 seconds while still testing scalability.
+        """
         print("Running IODatabase benchmarks...")
         
-        # Small dataset only - quick benchmarks
+        # Small dataset - quick
         print("  Small dataset (3 channels, 50 points)...")
         self.benchmark_io_add_data_point(3, 50, 3)
-        self.benchmark_io_get_channel(3, 50, 100)
+        self.benchmark_io_get_channel(3, 50, 200)
         self.benchmark_io_get_data_at_time(3, 50, 20)
         self.benchmark_io_get_data_in_range(3, 50, 10)
         self.benchmark_io_get_statistics(3, 50, 3)
         
-        # Medium dataset - reduced size
+        # Medium dataset - quick
         print("  Medium dataset (5 channels, 200 points)...")
         self.benchmark_io_add_data_point(5, 200, 2)
-        self.benchmark_io_get_channel(5, 200, 100)
+        self.benchmark_io_get_channel(5, 200, 200)
         self.benchmark_io_get_data_at_time(5, 200, 20)
         self.benchmark_io_get_data_in_range(5, 200, 10)
         self.benchmark_io_get_statistics(5, 200, 2)
         
         print("\nRunning VirtualDatabase benchmarks...")
         
-        # Small dataset only - quick benchmarks
+        # Small dataset - quick
         print("  Small dataset (3 channels, 50 points, 50 Hz)...")
-        self.benchmark_virtual_build(3, 50, 50, 2)
-        self.benchmark_virtual_rebuild(3, 50, 10, 50, 3)
-        self.benchmark_virtual_get_row_data(3, 50, 50, 20)
+        self.benchmark_virtual_build(3, 50, 50, 1)
+        self.benchmark_virtual_rebuild(3, 50, 10, 50, 2)
+        self.benchmark_virtual_get_row_data(3, 50, 50, 10)
         
-        # Medium dataset - reduced size
+        # Medium dataset
         print("  Medium dataset (5 channels, 200 points, 200 Hz)...")
         self.benchmark_virtual_build(5, 200, 200, 1)
-        self.benchmark_virtual_rebuild(5, 200, 20, 200, 2)
-        self.benchmark_virtual_get_row_data(5, 200, 200, 20)
+        self.benchmark_virtual_rebuild(5, 200, 20, 200, 1)
+        self.benchmark_virtual_get_row_data(5, 200, 200, 10)
         
-        # Large dataset - to test scalability
+        # Large dataset - test scalability
         print("  Large dataset (10 channels, 1000 points, 500 Hz)...")
         self.benchmark_virtual_build(10, 1000, 500, 1)
         self.benchmark_virtual_rebuild(10, 1000, 100, 500, 1)
-        self.benchmark_virtual_get_row_data(10, 1000, 500, 10)
+        self.benchmark_virtual_get_row_data(10, 1000, 500, 5)
         
-        # Extra large dataset - ~5k rows (10 channels, 5000 points, 1000 Hz)
+        # Extra large dataset - ~5k rows
         print("  Extra large dataset (10 channels, 5000 points, 1000 Hz)...")
         self.benchmark_virtual_build(10, 5000, 1000, 1)
         self.benchmark_virtual_rebuild(10, 5000, 500, 1000, 1)
-        self.benchmark_virtual_get_row_data(10, 5000, 1000, 5)
+        self.benchmark_virtual_get_row_data(10, 5000, 1000, 3)
         
-        # Very large dataset - ~10k rows (10 channels, 10000 points, 1000 Hz)
+        # Very large dataset - ~10k rows
         print("  Very large dataset (10 channels, 10000 points, 1000 Hz)...")
         self.benchmark_virtual_build(10, 10000, 1000, 1)
         self.benchmark_virtual_rebuild(10, 10000, 1000, 1000, 1)
-        self.benchmark_virtual_get_row_data(10, 10000, 1000, 3)
+        self.benchmark_virtual_get_row_data(10, 10000, 1000, 2)
         
-        # Huge dataset - ~50k rows (10 channels, 50000 points, 1000 Hz)
+        # Huge dataset - ~50k rows (largest we'll test to stay under 20s)
         print("  Huge dataset (10 channels, 50000 points, 1000 Hz)...")
         self.benchmark_virtual_build(10, 50000, 1000, 1)
         self.benchmark_virtual_rebuild(10, 50000, 5000, 1000, 1)
-        self.benchmark_virtual_get_row_data(10, 50000, 1000, 2)
-        
-        # Massive dataset - ~100k rows (10 channels, 100000 points, 1000 Hz)
-        print("  Massive dataset (10 channels, 100000 points, 1000 Hz)...")
-        self.benchmark_virtual_build(10, 100000, 1000, 1)
-        self.benchmark_virtual_rebuild(10, 100000, 10000, 1000, 1)
-        self.benchmark_virtual_get_row_data(10, 100000, 1000, 1)
-        
-        # Extreme dataset - ~250k rows (10 channels, 250000 points, 1000 Hz)
-        print("  Extreme dataset (10 channels, 250000 points, 1000 Hz)...")
-        self.benchmark_virtual_build(10, 250000, 1000, 1)
-        self.benchmark_virtual_rebuild(10, 250000, 25000, 1000, 1)
-        self.benchmark_virtual_get_row_data(10, 250000, 1000, 1)
-        
-        # Ultra dataset - ~500k rows (10 channels, 500000 points, 1000 Hz)
-        print("  Ultra dataset (10 channels, 500000 points, 1000 Hz)...")
-        self.benchmark_virtual_build(10, 500000, 1000, 1)
-        self.benchmark_virtual_rebuild(10, 500000, 50000, 1000, 1)
-        self.benchmark_virtual_get_row_data(10, 500000, 1000, 1)
-        
-        # Maximum dataset - ~1M rows (10 channels, 1000000 points, 1000 Hz)
-        print("  Maximum dataset (10 channels, 1000000 points, 1000 Hz)...")
-        self.benchmark_virtual_build(10, 1000000, 1000, 1)
-        self.benchmark_virtual_rebuild(10, 1000000, 100000, 1000, 1)
-        self.benchmark_virtual_get_row_data(10, 1000000, 1000, 1)
+        self.benchmark_virtual_get_row_data(10, 50000, 1000, 1)
         
         return self.results
     

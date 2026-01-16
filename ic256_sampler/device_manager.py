@@ -115,7 +115,6 @@ class DeviceManager:
             # Create client and channels
             client = IGXWebsocketClient(ip_address)
             channels = config.channel_creator(client)
-            env_channels = config.env_channel_creator(client) if config.env_channel_creator else None
             
             # Create model and set up device
             model = config.model_creator()
@@ -133,7 +132,7 @@ class DeviceManager:
                 target=self._collect_from_device,
                 name=f"{config.device_type.lower()}_device_{ip_address}",
                 daemon=True,
-                args=(config, client, channels, env_channels, model, field_to_path, ip_address),
+                args=(config, client, channels, model, field_to_path, ip_address),
             )
             
             # Create connection object
@@ -142,7 +141,7 @@ class DeviceManager:
                 ip_address=ip_address,
                 client=client,
                 channels=channels,
-                env_channels=env_channels,
+                env_channels=None,  # No longer used, kept for backward compatibility
                 model=model,
                 field_to_path=field_to_path,
                 thread=thread,
@@ -228,7 +227,6 @@ class DeviceManager:
         config: DeviceConfig,
         client: IGXWebsocketClient,
         channels: Dict[str, Any],
-        env_channels: Optional[Dict[str, Any]],
         model: Any,
         field_to_path: Dict[str, str],
         ip_address: str,
@@ -251,7 +249,7 @@ class DeviceManager:
                 # Update subscribed fields
                 client.updateSubscribedFields()
                 
-                # Collect all data from this device
+                # Collect all data from this device (all channels, including environmental)
                 first_timestamp = self._collect_all_channel_data(
                     channels, field_to_path, first_timestamp
                 )
@@ -357,7 +355,7 @@ class DeviceManager:
 
 # Device configuration creators (for backward compatibility)
 def create_ic256_channels(client: IGXWebsocketClient) -> Dict[str, Any]:
-    """Create channel dictionary for IC256 device."""
+    """Create channel dictionary for IC256 device (including environmental channels)."""
     from .device_paths import IC256_45_PATHS
     return {
         "mean_channel_a": client.field(IC256_45_PATHS["adc"]["gaussian_fit_a_mean"]),
@@ -367,11 +365,22 @@ def create_ic256_channels(client: IGXWebsocketClient) -> Dict[str, Any]:
         "primary_channel": client.field(IC256_45_PATHS["adc"]["primary_dose"]),
         "channel_sum": client.field(IC256_45_PATHS["adc"]["channel_sum"]),
         "external_trigger": client.field(IC256_45_PATHS["adc"]["gate_signal"]),
+        # Environmental sensor channels (treated same as any other channel)
+        "temperature": client.field(IC256_45_PATHS["environmental_sensor"]["temperature"]),
+        "humidity": client.field(IC256_45_PATHS["environmental_sensor"]["humidity"]),
+        "pressure": client.field(IC256_45_PATHS["environmental_sensor"]["pressure"]),
+        "env_connected": client.field(IC256_45_PATHS["environmental_sensor"]["state"]),
     }
 
 
+# create_ic256_env_channels is deprecated - environmental channels are now included in create_ic256_channels
+# Keeping this function for backward compatibility but it's no longer used
 def create_ic256_env_channels(client: IGXWebsocketClient) -> Dict[str, Any]:
-    """Create environment channel dictionary for IC256 device."""
+    """Create environment channel dictionary for IC256 device.
+    
+    DEPRECATED: Environmental channels are now included in create_ic256_channels().
+    This function is kept for backward compatibility but should not be used.
+    """
     from .device_paths import IC256_45_PATHS
     return {
         "temperature": client.field(IC256_45_PATHS["environmental_sensor"]["temperature"]),
@@ -396,7 +405,7 @@ IC256_CONFIG = DeviceConfig(
     device_name="IC256-42/35",
     device_type="IC256",
     channel_creator=create_ic256_channels,
-    env_channel_creator=create_ic256_env_channels,
+    env_channel_creator=None,  # Environmental channels now included in main channels
     filename_prefix="IC256_42x35",
     model_creator=lambda: IC256Model(),
 )
