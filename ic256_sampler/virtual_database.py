@@ -248,7 +248,7 @@ class VirtualDatabase:
         ref_tolerance = row_interval * 0.5
         interp_tolerance = row_interval * 2.0
         
-        # Track last known values for forward-fill (for INTERPOLATED channels)
+        # Track last known values for forward-fill (for INTERPOLATED and ASYNCHRONOUS channels)
         last_known_values: Dict[str, Any] = {}
         
         while current_time <= last_elapsed:
@@ -411,13 +411,13 @@ class VirtualDatabase:
                     try:
                         converted_value = converter(raw_value)
                         row_data[col_name] = converted_value
-                        # Update last known value for forward-fill
-                        if col_policy == ChannelPolicy.INTERPOLATED:
+                        # Update last known value for forward-fill (INTERPOLATED and ASYNCHRONOUS)
+                        if col_policy in (ChannelPolicy.INTERPOLATED, ChannelPolicy.ASYNCHRONOUS):
                             last_known_values[col_name] = converted_value
                     except Exception:
                         pass
-                elif col_policy == ChannelPolicy.INTERPOLATED and col_name in last_known_values:
-                    # Forward-fill: use last known value if interpolation failed
+                elif col_policy in (ChannelPolicy.INTERPOLATED, ChannelPolicy.ASYNCHRONOUS) and col_name in last_known_values:
+                    # Forward-fill: use last known value if matching failed
                     row_data[col_name] = last_known_values[col_name]
             
             # Create virtual row
@@ -1434,14 +1434,14 @@ class VirtualDatabase:
         ref_tolerance = row_interval * 0.5
         interp_tolerance = row_interval * 2.0
         
-        # Track last known values for forward-fill (for INTERPOLATED channels)
+        # Track last known values for forward-fill (for INTERPOLATED and ASYNCHRONOUS channels)
         # Initialize from existing rows if available
         last_known_values: Dict[str, Any] = {}
         if self.rows:
             # Get last known values from the last row
             last_row = self.rows[-1]
             for col_name, col_policy, _, _, _, _ in column_data:
-                if col_policy == ChannelPolicy.INTERPOLATED and col_name in last_row.data:
+                if col_policy in (ChannelPolicy.INTERPOLATED, ChannelPolicy.ASYNCHRONOUS) and col_name in last_row.data:
                     value = last_row.data[col_name]
                     if value is not None:
                         last_known_values[col_name] = value
@@ -1608,13 +1608,13 @@ class VirtualDatabase:
                     try:
                         converted_value = converter(raw_value)
                         row_data[col_name] = converted_value
-                        # Update last known value for forward-fill
-                        if col_policy == ChannelPolicy.INTERPOLATED:
+                        # Update last known value for forward-fill (INTERPOLATED and ASYNCHRONOUS)
+                        if col_policy in (ChannelPolicy.INTERPOLATED, ChannelPolicy.ASYNCHRONOUS):
                             last_known_values[col_name] = converted_value
                     except Exception:
                         pass
-                elif col_policy == ChannelPolicy.INTERPOLATED and col_name in last_known_values:
-                    # Forward-fill: use last known value if interpolation failed
+                elif col_policy in (ChannelPolicy.INTERPOLATED, ChannelPolicy.ASYNCHRONOUS) and col_name in last_known_values:
+                    # Forward-fill: use last known value if matching failed
                     row_data[col_name] = last_known_values[col_name]
             
             # Create virtual row

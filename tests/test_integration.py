@@ -235,32 +235,57 @@ class TestDataCollectionRate:
             # Rate is higher than expected - this is acceptable
             print(f"Note: Actual sampling rate {actual_rate:.2f} Hz is above target {sampling_rate} Hz. This is acceptable.")
         
-        # Check for empty cells in INTERPOLATED columns only
+        # Check for empty cells in data columns
         # Forward-fill is implemented for INTERPOLATED channels, so they should not have empty cells
         # after the first data point is seen
+        # ASYNCHRONOUS channels can have empty cells (expected when no data point within tolerance)
+        # SYNCHRONIZED channels should have values when data exists
         from ic256_sampler.ic256_model import IC256Model
         from ic256_sampler.virtual_database import ChannelPolicy
         
-        # Get column definitions to identify INTERPOLATED columns
+        # Get column definitions to identify columns by policy
         columns = IC256Model.create_columns(reference_channel)
-        interpolated_column_names = [
-            col_def.name for col_def in columns
-            if col_def.policy == ChannelPolicy.INTERPOLATED and col_def.channel_path is not None
+        
+        # Build mapping of column name to policy
+        col_policy_map = {
+            col_def.name: col_def.policy 
+            for col_def in columns 
+            if col_def.channel_path is not None
+        }
+        
+        # Specifically check these important channels:
+        # - External trigger (ASYNCHRONOUS)
+        # - Temperature, Humidity, Pressure (INTERPOLATED environmental channels)
+        important_channels = [
+            "External trigger",
+            "Temperature (℃)",
+            "Humidity (%rH)",
+            "Pressure (hPa)",
         ]
         
-        if interpolated_column_names:
+        if col_policy_map:
             with open(test_file, 'r', newline='', encoding='utf-8-sig') as f:
                 reader = csv.reader(f)
                 header = next(reader)
                 
-                # Find indices of INTERPOLATED columns
+                # Find indices of all data columns
+                data_indices = [
+                    i for i, h in enumerate(header) if h in col_policy_map
+                ]
+                
+                # Find indices of INTERPOLATED columns (these should have forward-fill)
                 interpolated_indices = [
-                    i for i, h in enumerate(header) if h in interpolated_column_names
+                    i for i, h in enumerate(header) 
+                    if h in col_policy_map and col_policy_map[h] == ChannelPolicy.INTERPOLATED
+                ]
+                
+                # Find indices of important channels for detailed reporting
+                important_indices = [
+                    i for i, h in enumerate(header) if h in important_channels
                 ]
                 
                 empty_cell_issues = []
-                last_values = {col_idx: None for col_idx in interpolated_indices}
-                has_seen_data = {col_idx: False for col_idx in interpolated_indices}
+                has_seen_data = {col_idx: False for col_idx in data_indices}
                 
                 for row_num, row in enumerate(reader, start=2):
                     if len(row) < len(header):
@@ -268,16 +293,32 @@ class TestDataCollectionRate:
                         empty_cell_issues.append((row_num, "structural", f"Row has {len(row)} columns, expected {len(header)}"))
                         continue
                     
-                    for col_idx in interpolated_indices:
+                    # Check INTERPOLATED and ASYNCHRONOUS columns for forward-fill (should not have empty cells after first data point)
+                    # Find indices of ASYNCHRONOUS columns
+                    async_indices = [
+                        i for i, h in enumerate(header) 
+                        if h in col_policy_map and col_policy_map[h] == ChannelPolicy.ASYNCHRONOUS
+                    ]
+                    # Combine INTERPOLATED and ASYNCHRONOUS indices
+                    forward_fill_indices = interpolated_indices + async_indices
+                    
+                    for col_idx in forward_fill_indices:
                         if col_idx < len(row):
                             cell_value = row[col_idx]
                             # Check for empty or whitespace-only cells
                             if cell_value and cell_value.strip():
-                                last_values[col_idx] = cell_value
                                 has_seen_data[col_idx] = True
                             elif has_seen_data[col_idx]:
                                 # We've seen data before, so forward-fill should have filled this
-                                empty_cell_issues.append((row_num, header[col_idx], "empty cell after data seen"))
+                                col_name = header[col_idx]
+                                empty_cell_issues.append((row_num, col_name, "empty cell after data seen (forward-fill should have filled)"))
+                    
+                    # Track if we've seen data in any column (for reporting)
+                    for col_idx in data_indices:
+                        if col_idx < len(row):
+                            cell_value = row[col_idx]
+                            if cell_value and cell_value.strip():
+                                has_seen_data[col_idx] = True
                 
                 if empty_cell_issues:
                     # Report first 20 issues
@@ -286,9 +327,22 @@ class TestDataCollectionRate:
                         for r, c, msg in empty_cell_issues[:20]
                     ])
                     error_msg = (
-                        f"Found {len(empty_cell_issues)} empty cells in INTERPOLATED columns "
+                        f"Found {len(empty_cell_issues)} empty cells in INTERPOLATED/ASYNCHRONOUS columns "
                         f"(examples: {issues_str}). "
-                        f"This indicates missing data that should be handled by forward-fill. "
-                        f"INTERPOLATED columns should have values after the first data point is seen."
+                        f"INTERPOLATED and ASYNCHRONOUS columns should have forward-fill values after the first data point is seen."
                     )
                     pytest.fail(error_msg)
+                
+                # Verify that important channels have at least some data
+                missing_important = []
+                for col_idx in important_indices:
+                    col_name = header[col_idx]
+                    if not has_seen_data.get(col_idx, False):
+                        missing_important.append(col_name)
+                
+                if missing_important:
+                    pytest.fail(
+                        f"Important channels have no data in CSV: {', '.join(missing_important)}. "
+                        f"These channels should be collected: External trigger (ASYNCHRONOUS), "
+                        f"Temperature/Humidity/Pressure (INTERPOLATED environmental channels)."
+                    )

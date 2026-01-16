@@ -159,6 +159,9 @@ class CSVWriter:
                     # Fill missing values with empty string
                     # Converters should handle error values (e.g., ERROR_GAUSS from IC256Model)
                     result.append("")
+                elif isinstance(value, bool):
+                    # Convert boolean to 0 or 1 for CSV
+                    result.append(1 if value else 0)
                 else:
                     result.append(value)
         

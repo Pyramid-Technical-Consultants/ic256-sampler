@@ -660,6 +660,58 @@ class TestCSVWriter:
             pruned = virtual_db.prune_rows(rows_to_keep)
             assert pruned > 0
             assert virtual_db.get_row_count() == rows_to_keep
+    
+    def test_boolean_values_written_as_0_or_1(self, tmp_path):
+        """Test that boolean values are written as 0 or 1 in CSV, not TRUE/FALSE."""
+        from ic256_sampler.io_database import IODatabase
+        from ic256_sampler.virtual_database import VirtualDatabase, ColumnDefinition, ChannelPolicy
+        
+        io_db = IODatabase()
+        channel_path = "/test/bool_channel"
+        
+        base_timestamp = 1000000000000000000
+        # Add boolean values
+        io_db.add_data_point(channel_path, True, base_timestamp)
+        io_db.add_data_point(channel_path, False, base_timestamp + int(0.5e9))
+        io_db.add_data_point(channel_path, True, base_timestamp + int(1e9))
+        
+        columns = [
+            ColumnDefinition(name="Timestamp (s)", channel_path=None, policy=ChannelPolicy.SYNCHRONIZED),
+            ColumnDefinition(name="Boolean Value", channel_path=channel_path, policy=ChannelPolicy.SYNCHRONIZED),
+        ]
+        
+        virtual_db = VirtualDatabase(io_db, channel_path, 10, columns)
+        virtual_db.build()
+        
+        file_path = tmp_path / "test_bool.csv"
+        writer = CSVWriter(
+            virtual_database=virtual_db,
+            file_path=str(file_path),
+            device_name="test_device",
+            note="Test",
+        )
+        
+        rows_written = writer.write_all()
+        writer.close()
+        
+        assert rows_written > 0
+        
+        # Read CSV and verify boolean values are 0 or 1
+        with open(file_path, 'r', newline='', encoding='utf-8-sig') as f:
+            reader = csv.reader(f)
+            header = next(reader)
+            
+            bool_idx = header.index("Boolean Value")
+            
+            for row in reader:
+                if len(row) > bool_idx:
+                    bool_value = row[bool_idx]
+                    # Should be "0" or "1", not "True" or "False"
+                    assert bool_value in ["0", "1", ""], \
+                        f"Boolean value should be 0 or 1, got '{bool_value}'"
+                    if bool_value:  # If not empty
+                        assert bool_value in ["0", "1"], \
+                            f"Boolean value should be 0 or 1, got '{bool_value}'"
 
 
 class TestCSVWriterIntegration:
@@ -751,30 +803,53 @@ class TestCSVWriterIntegration:
         assert stats['file_size'] > 0
         assert stats['virtual_db_rows'] == virtual_db.get_row_count()
         
-        # Check for empty cells in INTERPOLATED columns only
+        # Check for empty cells in INTERPOLATED columns
         # Forward-fill is implemented for INTERPOLATED channels, so they should not have empty cells
         # after the first data point is seen
+        # ASYNCHRONOUS channels can have empty cells (expected when no data point within tolerance)
+        # SYNCHRONIZED channels should have values when data exists
         from ic256_sampler.virtual_database import ChannelPolicy
         
-        # Get column definitions to identify INTERPOLATED columns
-        interpolated_column_names = [
-            col_def.name for col_def in virtual_db.columns
-            if col_def.policy == ChannelPolicy.INTERPOLATED and col_def.channel_path is not None
+        # Build mapping of column name to policy
+        col_policy_map = {
+            col_def.name: col_def.policy 
+            for col_def in virtual_db.columns 
+            if col_def.channel_path is not None
+        }
+        
+        # Specifically check these important channels:
+        # - External trigger (ASYNCHRONOUS)
+        # - Temperature, Humidity, Pressure (INTERPOLATED environmental channels)
+        important_channels = [
+            "External trigger",
+            "Temperature (℃)",
+            "Humidity (%rH)",
+            "Pressure (hPa)",
         ]
         
-        if interpolated_column_names:
+        if col_policy_map:
             with open(file_path, 'r', newline='', encoding='utf-8-sig') as f:
                 reader = csv.reader(f)
                 header = next(reader)
                 
-                # Find indices of INTERPOLATED columns
+                # Find indices of all data columns
+                data_indices = [
+                    i for i, h in enumerate(header) if h in col_policy_map
+                ]
+                
+                # Find indices of INTERPOLATED columns (these should have forward-fill)
                 interpolated_indices = [
-                    i for i, h in enumerate(header) if h in interpolated_column_names
+                    i for i, h in enumerate(header) 
+                    if h in col_policy_map and col_policy_map[h] == ChannelPolicy.INTERPOLATED
+                ]
+                
+                # Find indices of important channels for detailed reporting
+                important_indices = [
+                    i for i, h in enumerate(header) if h in important_channels
                 ]
                 
                 empty_cell_issues = []
-                last_values = {col_idx: None for col_idx in interpolated_indices}
-                has_seen_data = {col_idx: False for col_idx in interpolated_indices}
+                has_seen_data = {col_idx: False for col_idx in data_indices}
                 
                 for row_num, row in enumerate(reader, start=2):
                     if len(row) < len(header):
@@ -782,16 +857,32 @@ class TestCSVWriterIntegration:
                         empty_cell_issues.append((row_num, "structural", f"Row has {len(row)} columns, expected {len(header)}"))
                         continue
                     
-                    for col_idx in interpolated_indices:
+                    # Check INTERPOLATED and ASYNCHRONOUS columns for forward-fill (should not have empty cells after first data point)
+                    # Find indices of ASYNCHRONOUS columns
+                    async_indices = [
+                        i for i, h in enumerate(header) 
+                        if h in col_policy_map and col_policy_map[h] == ChannelPolicy.ASYNCHRONOUS
+                    ]
+                    # Combine INTERPOLATED and ASYNCHRONOUS indices
+                    forward_fill_indices = interpolated_indices + async_indices
+                    
+                    for col_idx in forward_fill_indices:
                         if col_idx < len(row):
                             cell_value = row[col_idx]
                             # Check for empty or whitespace-only cells
                             if cell_value and cell_value.strip():
-                                last_values[col_idx] = cell_value
                                 has_seen_data[col_idx] = True
                             elif has_seen_data[col_idx]:
                                 # We've seen data before, so forward-fill should have filled this
-                                empty_cell_issues.append((row_num, header[col_idx], "empty cell after data seen"))
+                                col_name = header[col_idx]
+                                empty_cell_issues.append((row_num, col_name, "empty cell after data seen (forward-fill should have filled)"))
+                    
+                    # Track if we've seen data in any column (for reporting)
+                    for col_idx in data_indices:
+                        if col_idx < len(row):
+                            cell_value = row[col_idx]
+                            if cell_value and cell_value.strip():
+                                has_seen_data[col_idx] = True
                 
                 if empty_cell_issues:
                     # Report first 20 issues
@@ -800,12 +891,25 @@ class TestCSVWriterIntegration:
                         for r, c, msg in empty_cell_issues[:20]
                     ])
                     error_msg = (
-                        f"Found {len(empty_cell_issues)} empty cells in INTERPOLATED columns "
+                        f"Found {len(empty_cell_issues)} empty cells in INTERPOLATED/ASYNCHRONOUS columns "
                         f"(examples: {issues_str}). "
-                        f"This indicates missing data that should be handled by forward-fill. "
-                        f"INTERPOLATED columns should have values after the first data point is seen."
+                        f"INTERPOLATED and ASYNCHRONOUS columns should have forward-fill values after the first data point is seen."
                     )
                     pytest.fail(error_msg)
+                
+                # Verify that important channels have at least some data
+                missing_important = []
+                for col_idx in important_indices:
+                    col_name = header[col_idx]
+                    if not has_seen_data.get(col_idx, False):
+                        missing_important.append(col_name)
+                
+                if missing_important:
+                    pytest.fail(
+                        f"Important channels have no data in CSV: {', '.join(missing_important)}. "
+                        f"These channels should be collected: External trigger (ASYNCHRONOUS), "
+                        f"Temperature/Humidity/Pressure (INTERPOLATED environmental channels)."
+                    )
 
     def test_incremental_write_real_data(self, ic256_ip, tmp_path):
         """Test incremental writing with real device data."""

@@ -139,25 +139,63 @@ class Application:
     def _update_statistics(self) -> None:
         """Update statistics display (rows and file size) in GUI.
         
-        Continues updating even after stop_event is set, until collector thread finishes.
-        This ensures statistics are updated while data is being written to CSV after stop.
+        Continues updating even after stop_event is set, until collector thread finishes
+        AND statistics have stabilized (no changes for a while). This ensures statistics
+        are updated while data is being written to CSV after stop, and shows final values.
         """
+        consecutive_no_change = 0
+        previous_total_rows = 0
+        previous_total_size = 0
+        
         while True:
             # Continue updating if:
             # 1. Not stopped yet, OR
-            # 2. We're in stopping mode and collector thread is still alive (processing final data)
-            should_continue = (
-                not self.stop_event.is_set() or
-                (self._stopping and self.collector_thread and self.collector_thread.is_alive())
+            # 2. We're in stopping mode and (collector thread is alive OR statistics are still changing)
+            collector_thread_alive = (
+                self.collector_thread and 
+                self.collector_thread.is_alive()
             )
             
-            if not should_continue:
-                break
+            should_continue = (
+                not self.stop_event.is_set() or
+                (self._stopping and collector_thread_alive)
+            )
             
             if self.window and self.device_statistics:
                 # Aggregate statistics across all devices
                 total_rows = sum(stats.get("rows", 0) for stats in self.device_statistics.values())
                 total_size = sum(stats.get("file_size", 0) for stats in self.device_statistics.values())
+                
+                # Check if statistics have changed
+                if self._stopping:
+                    if (total_rows == previous_total_rows and 
+                        total_size == previous_total_size):
+                        consecutive_no_change += 1
+                    else:
+                        consecutive_no_change = 0
+                        previous_total_rows = total_rows
+                        previous_total_size = total_size
+                    
+                    # If collector thread finished and statistics haven't changed for 15 updates (1.5 seconds), we're done
+                    if (not collector_thread_alive and 
+                        consecutive_no_change >= 15):
+                        # Final update before stopping
+                        if total_size < 1024:
+                            size_str = f"{total_size} B"
+                        elif total_size < 1024 * 1024:
+                            size_str = f"{total_size / 1024:.1f} KB"
+                        else:
+                            size_str = f"{total_size / (1024 * 1024):.1f} MB"
+                        
+                        safe_gui_update(
+                            self.window,
+                            lambda r=total_rows, s=size_str: self.window.update_statistics(r, s)
+                        )
+                        break
+                else:
+                    # Not in stopping mode, update previous values
+                    previous_total_rows = total_rows
+                    previous_total_size = total_size
                 
                 # Format file size
                 if total_size < 1024:
@@ -171,6 +209,11 @@ class Application:
                     self.window,
                     lambda r=total_rows, s=size_str: self.window.update_statistics(r, s)
                 )
+            
+            if not should_continue:
+                # Not in stopping mode and stop_event is set, exit
+                break
+            
             time.sleep(TIME_UPDATE_INTERVAL)
     
     def _device_thread(self) -> None:
