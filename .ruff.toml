@@ -1,0 +1,5 @@
+# Ruff configuration (alternative to pyproject.toml)
+# This file is optional if you prefer separate config files
+
+line-length = 100
+target-version = "py38"
