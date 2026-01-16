@@ -224,6 +224,10 @@ class DeviceManager:
         
         Note: This does NOT clear the database - the caller should clear it after
         processing is complete to avoid losing data that's still being processed.
+        
+        This method is non-blocking - it signals threads to stop but does not wait
+        for them to finish. Threads will stop themselves when they see stop_event is set.
+        This prevents GUI freezing when called from the GUI thread.
         """
         with self._lock:
             if not self._running:
@@ -232,10 +236,11 @@ class DeviceManager:
             self._running = False
             self.stop_event.set()
             
-            # Wait for all threads to finish
-            for connection in self.connections.values():
-                if connection.thread.is_alive():
-                    connection.thread.join(timeout=5.0)
+            # NOTE: We do NOT wait for threads to finish here (thread.join()).
+            # This method is called from the GUI thread via stop_collection(),
+            # and blocking here would freeze the UI, especially with large files.
+            # The threads will naturally stop when they see stop_event is set.
+            # The collector thread will handle waiting for data to be processed.
             
             # NOTE: Database is NOT cleared here - caller should clear it after
             # processing is complete to avoid losing data that's still being processed
@@ -361,6 +366,8 @@ class DeviceManager:
                     time.sleep(0.001)
                     
                 except (ConnectionAbortedError, ConnectionResetError, OSError) as e:
+                    # Connection error in keep-alive thread - try to reconnect
+                    # This is the proper place to handle reconnection for persistent connections
                     status_changed = False
                     with self._lock:
                         if device_name in self.connections:
@@ -374,8 +381,25 @@ class DeviceManager:
                     if status_changed:
                         self._notify_status_change()
                     
-                    print(f"Connection error in keep-alive message loop: {e}")
-                    break
+                    print(f"Connection error in keep-alive message loop: {e}. Attempting reconnect...")
+                    try:
+                        # Reconnect in keep-alive thread - this maintains the connection
+                        client.reconnect()
+                        print(f"Successfully reconnected in keep-alive thread: {device_name}")
+                        # Update status back to connected
+                        with self._lock:
+                            if device_name in self.connections:
+                                conn = self.connections[device_name]
+                                with conn._status_lock:
+                                    conn._connection_status = "connected"
+                        self._notify_status_change()
+                        # Continue loop after successful reconnect
+                        time.sleep(0.1)  # Brief pause after reconnect
+                        continue
+                    except Exception as reconnect_error:
+                        print(f"Failed to reconnect in keep-alive thread: {device_name}, error: {reconnect_error}")
+                        # If reconnect fails, break the loop (connection is truly broken)
+                        break
                 except Exception as e:
                     print(f"Error in keep-alive message loop: {e}")
                     time.sleep(0.1)

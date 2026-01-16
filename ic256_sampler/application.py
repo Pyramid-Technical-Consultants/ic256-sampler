@@ -454,6 +454,21 @@ class Application:
             with device_manager._lock:
                 connection = device_manager.connections[device_name]
                 # Update sampling rate
+                # Check if connection is still open before trying to setup
+                # The connection should remain open between acquisitions (keep-alive thread maintains it)
+                if connection.client.ws == "" or not connection.client.ws.connected:
+                    # Connection is actually closed - reconnect is necessary
+                    error_msg = f"Connection closed for {device_name}. Attempting reconnect..."
+                    log_message_safe(self.window, error_msg, "WARNING")
+                    print(f"Warning: {error_msg}")
+                    try:
+                        connection.client.reconnect()
+                    except Exception as reconnect_error:
+                        error_msg = f"Failed to reconnect {device_name}: {reconnect_error}"
+                        log_message_safe(self.window, error_msg, "ERROR")
+                        print(f"Error: {error_msg}")
+                        continue  # Skip this device
+                
                 try:
                     connection.model.setup_device(connection.client, sampling_rate)
                     # CRITICAL: setup_device() calls sendSubscribeFields() which REPLACES
@@ -463,26 +478,51 @@ class Application:
                         field: True for field in connection.channels.values()
                     })
                 except (ConnectionAbortedError, ConnectionResetError, OSError) as e:
-                    # Connection error during setup - log and try to reconnect
+                    # Connection error during setup - only reconnect if connection is actually closed
+                    # Transient errors should not trigger reconnect (keep-alive thread handles those)
                     error_msg = f"Connection error setting up {device_name}: {e}"
-                    log_message_safe(self.window, error_msg, "ERROR")
+                    log_message_safe(self.window, error_msg, "WARNING")
                     print(f"Warning: {error_msg}")
-                    # Try to reconnect
-                    try:
-                        connection.client.reconnect()
-                        # Retry setup after reconnect
-                        connection.model.setup_device(connection.client, sampling_rate)
-                        # CRITICAL: After reconnect, we must re-subscribe to data channels
-                        # The reconnect creates a new websocket, so all subscriptions are lost
-                        connection.client.sendSubscribeFields({
-                            field: True for field in connection.channels.values()
-                        })
-                    except Exception as retry_error:
-                        # Reconnect failed - skip this device
-                        error_msg = f"Failed to reconnect {device_name}: {retry_error}"
-                        log_message_safe(self.window, error_msg, "ERROR")
-                        print(f"Error: {error_msg}")
-                        continue  # Skip this device
+                    
+                    # Connection error during setup
+                    # Check if connection is actually closed before reconnecting
+                    # During normal stop/start cycles, connections should remain open
+                    # Only reconnect if connection is actually closed
+                    if connection.client.ws == "" or not connection.client.ws.connected:
+                        # Connection is actually closed - reconnect is necessary
+                        error_msg = f"Connection closed for {device_name}. Attempting reconnect..."
+                        log_message_safe(self.window, error_msg, "WARNING")
+                        print(f"Warning: {error_msg}")
+                        try:
+                            connection.client.reconnect()
+                            # Retry setup after reconnect
+                            connection.model.setup_device(connection.client, sampling_rate)
+                            # CRITICAL: After reconnect, we must re-subscribe to data channels
+                            # The reconnect creates a new websocket, so all subscriptions are lost
+                            connection.client.sendSubscribeFields({
+                                field: True for field in connection.channels.values()
+                            })
+                        except Exception as retry_error:
+                            # Reconnect failed - skip this device
+                            error_msg = f"Failed to reconnect {device_name}: {retry_error}"
+                            log_message_safe(self.window, error_msg, "ERROR")
+                            print(f"Error: {error_msg}")
+                            continue  # Skip this device
+                    else:
+                        # Connection is still open but setup failed - likely transient error
+                        # The keep-alive thread should handle reconnection if needed
+                        # For now, just log and try to continue with channel re-subscription
+                        print(f"Transient connection error for {device_name} during setup (connection still open). "
+                              f"Keep-alive thread will handle reconnection if needed.")
+                        # Try to re-subscribe to channels even if setup_device failed
+                        # This ensures data channels are subscribed even if frequency setup had issues
+                        try:
+                            connection.client.sendSubscribeFields({
+                                field: True for field in connection.channels.values()
+                            })
+                        except Exception:
+                            # If re-subscription also fails, the keep-alive thread will handle reconnection
+                            pass
                 
                 # Ensure old thread is stopped before creating new one
                 if connection.thread.is_alive():
@@ -738,9 +778,12 @@ class Application:
             # Thread finished - complete cleanup
             self._stopping = False
             # Ensure statistics thread is also stopped
+            # Use non-blocking approach - just signal it to stop
+            # It will stop naturally when it sees stop_event is set
             if self.stats_thread and self.stats_thread.is_alive():
                 self.stop_event.set()
-                self.stats_thread.join(timeout=1.0)
+                # Don't wait for it - it will stop naturally
+                # If we need to ensure it's stopped, we can check in a callback
             self._finalize_stop()
     
     def _finalize_stop(self) -> None:

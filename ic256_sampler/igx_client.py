@@ -184,20 +184,51 @@ class IGXWebsocketClient:
                 # websocket-client automatically sends bytes as binary frames
                 self.ws.send(packed)
             except (ConnectionAbortedError, ConnectionResetError, OSError) as e:
-                # Connection was aborted/reset during send - try to reconnect
-                print(f"Connection error during send: {e}. Attempting reconnect: {self.ip}")
-                try:
-                    self.reconnect()
-                    # Try sending again after reconnect
-                    if self.ws.connected:
-                        message = {"event": event, "data": data}
-                        packed = msgpack.packb(message, use_bin_type=True)
-                        self.ws.send(packed)
-                except (ConnectionAbortedError, ConnectionResetError, OSError) as retry_error:
-                    print(f"Failed to send after reconnect: {self.ip}, error: {retry_error}")
+                # Connection error during send
+                # During normal stop/start cycles, connections should remain open.
+                # The keep-alive thread maintains the connection, so errors here are likely transient
+                # or the connection is actually broken. We should be conservative about reconnecting
+                # to avoid unnecessary connection churn during stop/start cycles.
+                
+                # Check if connection is actually closed (not just in a bad state)
+                connection_closed = not self.ws.connected
+                
+                if connection_closed:
+                    # Connection is actually closed - reconnect is necessary
+                    # This should be rare during normal operation (keep-alive thread should prevent this)
+                    print(f"Connection closed during send: {e}. Attempting reconnect: {self.ip}")
+                    try:
+                        self.reconnect()
+                        # Try sending again after reconnect
+                        if self.ws.connected:
+                            message = {"event": event, "data": data}
+                            packed = msgpack.packb(message, use_bin_type=True)
+                            self.ws.send(packed)
+                    except (ConnectionAbortedError, ConnectionResetError, OSError) as retry_error:
+                        print(f"Failed to send after reconnect: {self.ip}, error: {retry_error}")
+                else:
+                    # Connection error but connection still reports as connected
+                    # This might be a transient error or the connection is in a bad state
+                    # Don't automatically reconnect - let the keep-alive thread handle it
+                    # During normal stop/start cycles, we want to keep connections open
+                    # Log the error but don't fail - the keep-alive thread will maintain the connection
+                    print(f"Connection error during send (connection still reports as connected): {e}. "
+                          f"Keep-alive thread will handle reconnection if needed.")
+                    # Don't reconnect or re-raise - just log and return
+                    # The keep-alive thread will detect the issue and reconnect if necessary
+                    # This prevents unnecessary reconnects during stop/start cycles
         else:
-            print("Reconnecting :", self.ip)
-            self.reconnect()
+            # Connection is not connected
+            # During normal stop/start cycles, the keep-alive thread should maintain the connection
+            # Only reconnect if connection is actually closed (not just in a transient state)
+            # The keep-alive thread will handle reconnection for persistent connections
+            if self.ws != "":
+                # Connection exists but is not connected - this might be transient
+                # Let the keep-alive thread handle reconnection to avoid unnecessary reconnects
+                # during stop/start cycles
+                print(f"Connection not connected (keep-alive thread will handle reconnection if needed): {self.ip}")
+                # Don't automatically reconnect here - let keep-alive thread handle it
+                # This prevents unnecessary reconnects during normal stop/start cycles
 
     def sendSubscribeEvent(self, fields):
         self.sendEventData("subscribe", {key: False for key in fields.keys()})
@@ -266,6 +297,19 @@ class IGXWebsocketClient:
         self.updateSubscribedFields()
 
     def reconnect(self):
+        """Reconnect to the websocket.
+        
+        This closes the existing connection and creates a new one.
+        Should only be called when the connection is actually broken,
+        not during normal stop/start cycles.
+        """
+        # Close existing connection if it exists
+        if self.ws != "":
+            try:
+                self.ws.close()
+            except Exception:
+                pass  # Ignore errors when closing old connection
+        
         # Try MessagePack subprotocol ("mpack") first, fall back to regular WebSocket if not supported
         try:
             self.ws = websocket.create_connection(
@@ -276,7 +320,10 @@ class IGXWebsocketClient:
             # Server doesn't support MessagePack subprotocol, use regular WebSocket
             # We can still send MessagePack as binary frames without subprotocol negotiation
             self.ws = websocket.create_connection("ws://" + self.ip)
-        self.sendSubscribeFields(self.subscribedFields)
+        
+        # Re-subscribe to all previously subscribed fields
+        if self.subscribedFields:
+            self.sendSubscribeFields(self.subscribedFields)
 
     def close(self):
         self.ws.close()
