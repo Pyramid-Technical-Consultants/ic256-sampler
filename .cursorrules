@@ -1,0 +1,34 @@
+# IC256 Sampler - Cursor Agent Rules
+
+## Project Overview
+Python application for collecting data from IC256 and TX2 measurement devices via WebSocket. Uses Tkinter GUI with real-time data collection and CSV export.
+
+## Key Patterns
+
+### Thread Safety
+- Always use `gui_helpers.py` utilities for GUI updates from background threads
+- Never call GUI methods directly from background threads
+
+### Device Management
+- Use `device_manager.py` for device setup - create `DeviceConfig` instances, don't duplicate setup code
+- Pre-configured `IC256_CONFIG` and `TX2_CONFIG` available
+
+### Error Handling
+- Don't crash on device errors - log and continue
+- Use ERROR level for critical issues, WARNING for non-critical
+
+## Important Constants
+- Sampling rate: 1-6000 Hz (default: 500 Hz)
+- Thread join timeout: 30.0 seconds
+- Time update interval: 0.1 seconds
+
+## Testing
+- Integration tests use IPs from `config.json` (see `tests/conftest.py`)
+- Skip integration tests: `pytest -m "not integration"`
+
+## Documentation Guidelines
+- **DO NOT** create change summary markdown files (REFACTORING_SUMMARY.md, CHANGES.md, etc.)
+- **DO** update existing documentation when making changes
+- **DO** create new documentation files for user-facing docs (README, guides, etc.)
+- **DO NOT** create files that just summarize changes the agent made
+- Focus on improving code and documentation, not documenting what was changed
