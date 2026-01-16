@@ -50,6 +50,7 @@ class Application:
         self.collector: Optional[ModelCollector] = None
         self.device_manager: Optional[DeviceManager] = None  # Single persistent device manager with connections
         self.collector_thread: Optional[threading.Thread] = None
+        self.stats_thread: Optional[threading.Thread] = None  # Statistics update thread
         self._stopping = False  # Flag to track if we're in stopping mode
         self._cleanup_registered = False  # Track if cleanup is registered
     
@@ -406,6 +407,14 @@ class Application:
         if not self.window:
             return
         
+        # Stop any previous statistics update thread before starting new acquisition
+        # This prevents multiple threads from updating the GUI with stale data
+        if self.stats_thread and self.stats_thread.is_alive():
+            # Set stop_event to signal old thread to exit
+            self.stop_event.set()
+            # Wait briefly for thread to exit
+            self.stats_thread.join(timeout=0.5)
+        
         self.stop_event.clear()
         safe_gui_update(self.window, self.window.reset_elapse_time)
         safe_gui_update(self.window, self.window.reset_statistics)
@@ -521,8 +530,9 @@ class Application:
             note=note,
         )
         
-        # Initialize statistics
-        self.device_statistics = {device: {"rows": 0, "file_size": 0} for device in devices_added}
+        # Initialize statistics - reset to ensure clean state for new acquisition
+        # This ensures file size and row counts start at 0 for the new acquisition
+        self.device_statistics = {device: {"rows": 0, "file_size": 0, "file_path": ""} for device in devices_added}
         collector.statistics = self.device_statistics.get(primary_device_config.device_name, {})
 
         # Show success message
@@ -545,12 +555,13 @@ class Application:
         time_thread.start()
         
         # Start statistics update thread
-        stats_thread = threading.Thread(
+        # Store reference so we can stop it before next acquisition
+        self.stats_thread = threading.Thread(
             target=self._update_statistics,
             name="statistics_update",
             daemon=True
         )
-        stats_thread.start()
+        self.stats_thread.start()
         
         # Start ModelCollector thread (which starts DeviceManager)
         collector_thread = threading.Thread(
@@ -726,6 +737,10 @@ class Application:
         else:
             # Thread finished - complete cleanup
             self._stopping = False
+            # Ensure statistics thread is also stopped
+            if self.stats_thread and self.stats_thread.is_alive():
+                self.stop_event.set()
+                self.stats_thread.join(timeout=1.0)
             self._finalize_stop()
     
     def _finalize_stop(self) -> None:
