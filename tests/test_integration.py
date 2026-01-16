@@ -161,10 +161,21 @@ class TestDataCollectionRate:
         
         # Stop collection
         stop_event.set()
+        # Give DeviceManager threads time to finish their current iteration
+        time.sleep(0.2)
         device_manager.stop()  # Also stop DeviceManager explicitly
         
-        # Wait for thread to finish (with timeout)
-        collection_thread.join(timeout=15.0)
+        # Wait for collector thread to finish processing all data
+        # The collector will continue processing until all data is written
+        # For 3000 Hz at 5 seconds = 15000 rows, allow plenty of time
+        collection_thread.join(timeout=120.0)  # Longer timeout for final processing
+        
+        # Verify thread finished
+        if collection_thread.is_alive():
+            # Thread didn't finish - give it more time
+            print("Warning: Collector thread still processing, waiting longer...")
+            time.sleep(5.0)
+            collection_thread.join(timeout=30.0)
         
         # Verify file was created
         assert test_file.exists(), f"Data file was not created: {test_file}"

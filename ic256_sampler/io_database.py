@@ -6,6 +6,7 @@ and can be queried for data reconstruction and validation.
 """
 
 import time
+import bisect
 from typing import Dict, List, Tuple, Optional, Any, Set
 from collections import deque
 from dataclasses import dataclass, field
@@ -74,6 +75,8 @@ class ChannelData:
     ) -> List[DataPoint]:
         """Get all data points within an elapsed time range.
         
+        Uses binary search for efficient range queries on large datasets.
+        
         Args:
             start_elapsed: Start elapsed time (seconds)
             end_elapsed: End elapsed time (seconds)
@@ -81,10 +84,27 @@ class ChannelData:
         Returns:
             List of DataPoint objects within the range
         """
-        return [
-            point for point in self.data_points
-            if start_elapsed <= point.elapsed_time <= end_elapsed
-        ]
+        if not self.data_points:
+            return []
+        
+        # For small datasets, linear search is faster due to cache locality
+        if self.count < 100:
+            return [
+                point for point in self.data_points
+                if start_elapsed <= point.elapsed_time <= end_elapsed
+            ]
+        
+        # For larger datasets, use binary search to find bounds
+        # Create snapshot only if needed (deque doesn't support direct indexing for bisect)
+        snapshot = list(self.data_points)
+        
+        # Find start index using binary search
+        elapsed_times = [p.elapsed_time for p in snapshot]
+        start_idx = bisect.bisect_left(elapsed_times, start_elapsed)
+        end_idx = bisect.bisect_right(elapsed_times, end_elapsed)
+        
+        # Return slice of points in range
+        return snapshot[start_idx:end_idx]
     
     def get_point_at_time(
         self, 
@@ -93,6 +113,8 @@ class ChannelData:
     ) -> Optional[DataPoint]:
         """Get the data point closest to a target elapsed time.
         
+        Uses binary search for efficient lookups on large datasets.
+        
         Args:
             target_elapsed: Target elapsed time (seconds)
             tolerance: Maximum time difference (seconds)
@@ -100,10 +122,38 @@ class ChannelData:
         Returns:
             DataPoint closest to target, or None if none within tolerance
         """
+        if not self.data_points:
+            return None
+        
+        # For small datasets, linear search is faster due to cache locality
+        if self.count < 50:
+            closest = None
+            min_diff = float('inf')
+            for point in self.data_points:
+                diff = abs(point.elapsed_time - target_elapsed)
+                if diff < min_diff and diff <= tolerance:
+                    min_diff = diff
+                    closest = point
+            return closest
+        
+        # For larger datasets, use binary search
+        snapshot = list(self.data_points)
+        elapsed_times = [p.elapsed_time for p in snapshot]
+        
+        # Find the index where target_elapsed would be inserted
+        idx = bisect.bisect_left(elapsed_times, target_elapsed)
+        
+        # Check the point at idx and idx-1 (the two closest points)
+        candidates = []
+        if idx < len(snapshot):
+            candidates.append(snapshot[idx])
+        if idx > 0:
+            candidates.append(snapshot[idx - 1])
+        
+        # Find the closest candidate within tolerance
         closest = None
         min_diff = float('inf')
-        
-        for point in self.data_points:
+        for point in candidates:
             diff = abs(point.elapsed_time - target_elapsed)
             if diff < min_diff and diff <= tolerance:
                 min_diff = diff
@@ -185,11 +235,11 @@ class IODatabase:
             value: The data value
             timestamp_ns: Timestamp in nanoseconds since 1970
         """
-        # Ensure channel exists
-        if channel_path not in self.channels:
-            self.add_channel(channel_path)
-        
-        channel_data = self.channels[channel_path]
+        # Get or create channel in one operation (optimized dictionary access)
+        channel_data = self.channels.get(channel_path)
+        if channel_data is None:
+            channel_data = ChannelData(channel_path=channel_path)
+            self.channels[channel_path] = channel_data
         
         # Track global first timestamp
         if self.global_first_timestamp is None:

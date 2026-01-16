@@ -311,7 +311,10 @@ class DeviceManager:
                     if channel_path not in self.io_database.get_all_channels():
                         self.io_database.add_channel(channel_path)
                 
-                # Process EVERY entry in the array
+                # Batch process all data points to reduce lock contention
+                # Collect all points first, then add them in a single lock acquisition
+                points_to_add = []
+                
                 for data_point in data:
                     if not isinstance(data_point, (list, tuple)) or len(data_point) < 2:
                         continue
@@ -337,9 +340,13 @@ class DeviceManager:
                     if updated_first_timestamp is None:
                         updated_first_timestamp = ts_ns
                     
-                    # Add to shared database (thread-safe)
+                    points_to_add.append((channel_path, value, ts_ns))
+                
+                # Add all points in a single lock acquisition (much faster)
+                if points_to_add:
                     with self._lock:
-                        self.io_database.add_data_point(channel_path, value, ts_ns)
+                        for ch_path, val, ts in points_to_add:
+                            self.io_database.add_data_point(ch_path, val, ts)
                         
             except Exception as e:
                 print(f"Error collecting data from {field_name}: {e}")

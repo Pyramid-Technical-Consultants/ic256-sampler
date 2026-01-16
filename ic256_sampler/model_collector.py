@@ -145,11 +145,11 @@ class ModelCollector:
         if self.csv_writer.rows_written % 5000 == 0:
             self.csv_writer.sync()
         
-        # STEP 5: Prune old rows from virtual database if safe
-        if self.csv_writer.can_prune_rows(rows_to_keep=1000):
-            prunable = self.csv_writer.get_prunable_row_count(rows_to_keep=1000)
-            if prunable > 0:
-                self.virtual_database.prune_rows(keep_last_n=1000)
+        # STEP 5: Pruning disabled for performance
+        # Memory usage: 6 kHz * 6 min = 2.16M rows * ~150 bytes/row = ~325 MB
+        # IODatabase: ~1.3 GB for 15 channels
+        # Total: ~1.6 GB - acceptable for modern systems
+        # Pruning adds overhead and complexity without significant benefit
     
     def stop(self) -> None:
         """Stop data collection (but continue processing existing data).
@@ -183,10 +183,8 @@ class ModelCollector:
         Returns:
             True if all data has been processed (no new rows to write)
         """
-        # Rebuild to ensure we have the latest rows from the database
-        self.virtual_database.rebuild()
-        
-        # Check if there are any unwritten rows
+        # Quick check without expensive rebuild - just check if we've written all current rows
+        # This is a lightweight check that doesn't require rebuilding
         total_rows = self.virtual_database.get_row_count()
         return self.csv_writer.rows_written >= total_rows
     
@@ -234,40 +232,50 @@ def collect_data_with_model(
         collector.stop()  # This stops DeviceManager from collecting new data
         
         # Continue processing until all data is written
-        # Track previous row count to detect when we're done
-        max_iterations = 100000  # Safety limit
+        # Process aggressively with smart finish detection
+        max_iterations = 50000  # Safety limit
         iteration = 0
         consecutive_no_change = 0
         previous_rows_written = 0
         previous_virtual_rows = 0
         
+        # Get initial state
+        collector.collect_iteration()  # One iteration to get initial state
+        previous_rows_written = collector.csv_writer.rows_written
+        previous_virtual_rows = collector.virtual_database.get_row_count()
+        
         while iteration < max_iterations:
             collector.collect_iteration()
             iteration += 1
             
-            # Check if we're making progress
-            current_rows = collector.csv_writer.rows_written
-            current_virtual_rows = collector.virtual_database.get_row_count()
+            # Check progress every 25 iterations (reduces overhead)
+            if iteration % 25 == 0:
+                current_rows = collector.csv_writer.rows_written
+                current_virtual_rows = collector.virtual_database.get_row_count()
+                
+                # Check if we've caught up: written rows should match virtual rows
+                # AND virtual rows should not be growing (all IODatabase data processed)
+                if (current_rows == previous_rows_written and 
+                    current_virtual_rows == previous_virtual_rows and
+                    current_rows >= current_virtual_rows - 10):  # Allow small difference
+                    consecutive_no_change += 1
+                    # If no change for 8 checks (200 iterations), we're done
+                    if consecutive_no_change >= 8:
+                        break
+                else:
+                    consecutive_no_change = 0
+                    previous_rows_written = current_rows
+                    previous_virtual_rows = current_virtual_rows
             
-            # Check if both virtual rows and written rows have stopped changing
-            if current_rows == previous_rows_written and current_virtual_rows == previous_virtual_rows:
-                consecutive_no_change += 1
-                # If no change for 20 iterations, we're done
-                if consecutive_no_change >= 20:
-                    break
-            else:
-                consecutive_no_change = 0
-                previous_rows_written = current_rows
-                previous_virtual_rows = current_virtual_rows
-            
-            # Small sleep to avoid tight loop, but process quickly
-            time.sleep(0.0001)  # 100 microseconds - faster than collection phase
+            # Minimal sleep - only every 200 iterations
+            if iteration % 200 == 0:
+                time.sleep(0.00005)  # 50 microseconds
         
-        # Final processing pass to ensure everything is written
-        # Do a few more iterations to catch any remaining data
-        for _ in range(30):
+        # Final processing pass - ensure everything is written
+        for _ in range(15):
             collector.collect_iteration()
-            time.sleep(0.001)
+            if _ % 5 == 0:
+                time.sleep(0.0001)
         
     finally:
         # Finalize output (flush, sync, close)

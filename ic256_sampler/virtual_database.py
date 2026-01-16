@@ -9,6 +9,7 @@ It also supports converters to transform raw data values to desired units.
 from typing import Dict, List, Tuple, Optional, Any, Callable
 from dataclasses import dataclass, field
 from enum import Enum
+import bisect
 from .io_database import IODatabase, DataPoint, ChannelData
 
 
@@ -98,6 +99,20 @@ class VirtualDatabase:
         self.rows: List[VirtualRow] = []
         self._built = False
         self._last_built_time: Optional[float] = None  # Track last built timestamp for incremental builds
+        
+        # Performance optimization: cache search positions for each channel
+        # Maps channel_path -> last search index to enable incremental search
+        self._search_cache: Dict[str, int] = {}
+        
+        # Performance optimization: cache channel snapshots and elapsed times
+        # Maps channel_path -> (snapshot, elapsed_times_list, timestamps_list)
+        # Only valid during a single build/rebuild operation
+        self._snapshot_cache: Dict[str, Tuple[List[DataPoint], List[float], List[int]]] = {}
+        
+        # Performance optimization: cache channel data and snapshots
+        # Maps channel_path -> (ChannelData, snapshot, elapsed_times_list, timestamps_list)
+        self._channel_cache: Dict[str, Tuple[Optional[ChannelData], Optional[List[DataPoint]], Optional[List[float]], Optional[List[int]]]] = {}
+        self._ref_channel_cache: Optional[ChannelData] = None
     
     def get_headers(self) -> List[str]:
         """Get CSV header names for all columns.
@@ -116,42 +131,175 @@ class VirtualDatabase:
         if self._built:
             return
         
+        # Clear snapshot cache for fresh build
+        self._snapshot_cache.clear()
+        self._ref_channel_cache = None
+        
         # Get reference channel data
         ref_channel = self.io_database.get_channel(self.reference_channel)
         if not ref_channel or ref_channel.count == 0:
             return  # No data to build from
         
-        # Create snapshot to avoid mutation during iteration
-        ref_snapshot = list(ref_channel.data_points)
-        if not ref_snapshot:
-            return
+        # Cache reference channel
+        self._ref_channel_cache = ref_channel
         
-        # Determine time range from reference channel
-        first_elapsed = ref_snapshot[0].elapsed_time
-        last_elapsed = ref_snapshot[-1].elapsed_time
+        # Get time range efficiently - deques support indexing for first/last
+        if len(ref_channel.data_points) == 0:
+            return
+        first_elapsed = ref_channel.data_points[0].elapsed_time
+        last_elapsed = ref_channel.data_points[-1].elapsed_time
         
         # Calculate row interval
         row_interval = 1.0 / self.sampling_rate
         
+        # Pre-compute snapshots for all channels to avoid repeated conversions
+        # This is a one-time cost that pays off during the build loop
+        # Also pre-compute elapsed_times and timestamps lists for binary search efficiency
+        channel_snapshots: Dict[str, List[DataPoint]] = {}
+        channel_elapsed_times: Dict[str, List[float]] = {}
+        channel_timestamps: Dict[str, List[int]] = {}  # For synchronized channels
+        for col_def in self.columns:
+            if col_def.channel_path and col_def.channel_path not in channel_snapshots:
+                channel_data = self.io_database.get_channel(col_def.channel_path)
+                if channel_data:
+                    # Create snapshot once per channel
+                    snapshot = list(channel_data.data_points)
+                    channel_snapshots[col_def.channel_path] = snapshot
+                    # Pre-compute elapsed_times for binary search (one-time cost)
+                    channel_elapsed_times[col_def.channel_path] = [p.elapsed_time for p in snapshot]
+                    # Pre-compute timestamps for synchronized channels (one-time cost)
+                    if col_def.policy == ChannelPolicy.SYNCHRONIZED:
+                        channel_timestamps[col_def.channel_path] = [p.timestamp_ns for p in snapshot]
+        
+        # Also snapshot reference channel and pre-compute its elapsed_times
+        ref_snapshot = list(ref_channel.data_points)
+        ref_elapsed_times = [p.elapsed_time for p in ref_snapshot]
+        
+        # Pre-index column data to avoid dictionary lookups in hot loop
+        # Create a list of tuples: (col_name, col_policy, converter, snapshot, elapsed_times, timestamps)
+        # Cache all attributes to reduce attribute access overhead
+        column_data = []
+        for col_def in self.columns:
+            col_name = col_def.name
+            col_policy = col_def.policy
+            converter = col_def.converter
+            if col_def.channel_path is None:
+                column_data.append((col_name, col_policy, converter, None, None, None))
+            else:
+                snapshot = channel_snapshots.get(col_def.channel_path)
+                elapsed_times = channel_elapsed_times.get(col_def.channel_path) if snapshot else None
+                timestamps = channel_timestamps.get(col_def.channel_path) if col_policy == ChannelPolicy.SYNCHRONIZED else None
+                column_data.append((col_name, col_policy, converter, snapshot, elapsed_times, timestamps))
+        
+        # Estimate number of rows and pre-allocate
+        estimated_rows = int((last_elapsed - first_elapsed) * self.sampling_rate) + 1
+        self.rows = []
+        if estimated_rows > 0:
+            # Pre-allocate with None to avoid repeated reallocations
+            self.rows = [None] * min(estimated_rows, 1000000)  # Cap at 1M to avoid huge allocations
+        
         # Create rows at regular intervals
         current_time = first_elapsed
         last_row_time = None
+        row_idx = 0
+        
+        # Use incremental search - start from beginning for first row
+        ref_search_idx = 0
+        
+        # Pre-compute tolerance values
+        ref_tolerance = row_interval * 0.5
+        interp_tolerance = row_interval * 2.0
+        
         while current_time <= last_elapsed:
-            # Get data for all columns at this timestamp
-            row_data = self._get_row_data_at_time(current_time, row_interval)
+            # Find reference point using optimized incremental search
+            # Since rows are sequential, we can do a forward linear scan from last position
+            # This is faster than binary search for sequential access patterns
+            ref_point = None
+            if ref_snapshot and ref_elapsed_times:
+                # Start from last known position and scan forward
+                # This is O(1) amortized for sequential access
+                while ref_search_idx < len(ref_elapsed_times):
+                    elapsed = ref_elapsed_times[ref_search_idx]
+                    if elapsed >= current_time - ref_tolerance:
+                        # Found a candidate - check if it's within tolerance
+                        if abs(elapsed - current_time) <= ref_tolerance:
+                            point = ref_snapshot[ref_search_idx]
+                            ref_point = (point.value, point.elapsed_time, point.timestamp_ns)
+                            break
+                        elif elapsed > current_time + ref_tolerance:
+                            # Gone too far, check previous point
+                            if ref_search_idx > 0:
+                                prev_elapsed = ref_elapsed_times[ref_search_idx - 1]
+                                if abs(prev_elapsed - current_time) <= ref_tolerance:
+                                    point = ref_snapshot[ref_search_idx - 1]
+                                    ref_point = (point.value, point.elapsed_time, point.timestamp_ns)
+                                    ref_search_idx -= 1
+                            break
+                    ref_search_idx += 1
+                
+                # Fallback to binary search if linear scan didn't find it
+                if ref_point is None and ref_search_idx >= len(ref_elapsed_times):
+                    # Reset and use binary search
+                    idx = bisect.bisect_left(ref_elapsed_times, current_time)
+                    if idx < len(ref_snapshot):
+                        point = ref_snapshot[idx]
+                        if abs(point.elapsed_time - current_time) <= ref_tolerance:
+                            ref_point = (point.value, point.elapsed_time, point.timestamp_ns)
+                            ref_search_idx = idx
+                    if ref_point is None and idx > 0:
+                        point = ref_snapshot[idx - 1]
+                        if abs(point.elapsed_time - current_time) <= ref_tolerance:
+                            ref_point = (point.value, point.elapsed_time, point.timestamp_ns)
+                            ref_search_idx = idx - 1
+            
+            ref_timestamp_ns = ref_point[2] if ref_point else None
+            
+            # Process columns (inlined for speed)
+            # Pre-allocate dictionary with known size to avoid rehashing
+            row_data = dict.fromkeys((col_name for col_name, _, _, _, _, _ in column_data), None)
+            
+            for col_name, col_policy, converter, snapshot, elapsed_times, timestamps in column_data:
+                if snapshot is None:
+                    continue  # Already set to None
+                
+                # Apply policy-specific matching (use cached policy enum)
+                raw_value = None
+                if col_policy == ChannelPolicy.SYNCHRONIZED:
+                    raw_value = self._find_synchronized_fast(snapshot, timestamps, ref_timestamp_ns)
+                elif col_policy == ChannelPolicy.INTERPOLATED:
+                    raw_value = self._interpolate_fast(snapshot, elapsed_times, current_time, interp_tolerance)
+                elif col_policy == ChannelPolicy.ASYNCHRONOUS:
+                    raw_value = self._find_nearest_fast(snapshot, elapsed_times, current_time, interp_tolerance)
+                
+                # Apply converter (use cached converter function)
+                if raw_value is not None:
+                    try:
+                        row_data[col_name] = converter(raw_value)
+                    except Exception:
+                        pass  # Already None
             
             # Create virtual row
-            row = VirtualRow(timestamp=current_time, data=row_data)
-            self.rows.append(row)
+            if row_idx < len(self.rows):
+                self.rows[row_idx] = VirtualRow(timestamp=current_time, data=row_data)
+            else:
+                self.rows.append(VirtualRow(timestamp=current_time, data=row_data))
+            row_idx += 1
             last_row_time = current_time
             
             # Advance to next row time
             current_time += row_interval
         
+        # Trim to actual size
+        if row_idx < len(self.rows):
+            self.rows = self.rows[:row_idx]
+        
         self._built = True
         # Set to last row's timestamp, not last data point's elapsed time
         # This ensures incremental rebuild starts from the correct position
         self._last_built_time = last_row_time if last_row_time is not None else last_elapsed
+        
+        # Clear snapshot cache after build
+        self._snapshot_cache.clear()
     
     def _get_row_data_at_time(
         self,
@@ -172,8 +320,8 @@ class VirtualDatabase:
         """
         result = {}
         
-        # First, get reference channel data at this time
-        ref_channel = self.io_database.get_channel(self.reference_channel)
+        # Cache reference channel lookup (set during build/rebuild)
+        ref_channel = self._ref_channel_cache
         if not ref_channel:
             return result
         
@@ -182,6 +330,10 @@ class VirtualDatabase:
         # This allows us to match channels that arrived together
         ref_timestamp_ns = ref_point[2] if ref_point else None
         
+        # Cache channel lookups to avoid redundant dictionary access
+        # Many columns may share the same channel_path
+        channel_cache: Dict[str, Optional[ChannelData]] = {}
+        
         # Process each column according to its policy
         for col_def in self.columns:
             if col_def.channel_path is None:
@@ -189,7 +341,12 @@ class VirtualDatabase:
                 result[col_def.name] = None
                 continue
             
-            channel_data = self.io_database.get_channel(col_def.channel_path)
+            # Use cached channel lookup if available
+            channel_data = channel_cache.get(col_def.channel_path)
+            if channel_data is None:
+                channel_data = self.io_database.get_channel(col_def.channel_path)
+                channel_cache[col_def.channel_path] = channel_data
+            
             if not channel_data:
                 result[col_def.name] = None
                 continue
@@ -232,13 +389,387 @@ class VirtualDatabase:
         
         return result
     
+    def _get_row_data_at_time_optimized(
+        self,
+        target_elapsed: float,
+        row_interval: float,
+        ref_snapshot: List[DataPoint],
+        ref_elapsed_times: List[float],
+        channel_snapshots: Dict[str, List[DataPoint]],
+        channel_elapsed_times: Dict[str, List[float]],
+        channel_timestamps: Dict[str, List[int]],
+        start_search_idx: int = 0,
+    ) -> Dict[str, Any]:
+        """Optimized version that uses pre-computed snapshots and incremental binary search.
+        
+        This is used during build() to avoid repeated snapshot creation and elapsed_times list creation.
+        """
+        result = {}
+        
+        # Find reference point using incremental binary search (much faster for large arrays)
+        ref_point = None
+        ref_idx = start_search_idx
+        if ref_snapshot and ref_elapsed_times:
+            # Use binary search starting from last position for incremental search
+            # First, narrow down the search range using the start index
+            if ref_idx < len(ref_elapsed_times) and ref_elapsed_times[ref_idx] <= target_elapsed:
+                # Start binary search from last known position
+                search_start = ref_idx
+            else:
+                search_start = 0
+            
+            # Use binary search on pre-computed elapsed_times list
+            idx = bisect.bisect_left(ref_elapsed_times, target_elapsed, lo=search_start)
+            
+            # Check the point at idx and idx-1 (the two closest points)
+            candidates = []
+            if idx < len(ref_snapshot):
+                candidates.append((idx, ref_snapshot[idx]))
+            if idx > 0:
+                candidates.append((idx - 1, ref_snapshot[idx - 1]))
+            
+            # Find the closest candidate within tolerance
+            closest_idx = None
+            min_diff = float('inf')
+            tolerance = row_interval * 0.5
+            for candidate_idx, point in candidates:
+                diff = abs(point.elapsed_time - target_elapsed)
+                if diff < min_diff and diff <= tolerance:
+                    min_diff = diff
+                    closest_idx = candidate_idx
+                    ref_point = (point.value, point.elapsed_time, point.timestamp_ns)
+            
+            if closest_idx is not None:
+                ref_idx = closest_idx
+        
+        ref_timestamp_ns = ref_point[2] if ref_point else None
+        result['_ref_idx'] = ref_idx  # Store for next iteration
+        
+        # Process each column using cached snapshots
+        for col_def in self.columns:
+            if col_def.channel_path is None:
+                result[col_def.name] = None
+                continue
+            
+            snapshot = channel_snapshots.get(col_def.channel_path)
+            if not snapshot:
+                result[col_def.name] = None
+                continue
+            
+            # Apply policy-specific matching using snapshot and pre-computed elapsed_times
+            elapsed_times = channel_elapsed_times.get(col_def.channel_path)
+            raw_value = None
+            if col_def.policy == ChannelPolicy.SYNCHRONIZED:
+                # Use pre-computed timestamps list for synchronized search
+                timestamps = channel_timestamps.get(col_def.channel_path)
+                raw_value = self._find_synchronized_value_with_timestamps(
+                    snapshot, timestamps, ref_timestamp_ns, tolerance_ns=1000
+                )
+            elif col_def.policy == ChannelPolicy.INTERPOLATED:
+                raw_value = self._interpolate_value_in_snapshot_with_elapsed(
+                    snapshot, elapsed_times, target_elapsed, tolerance=row_interval * 2.0
+                )
+            elif col_def.policy == ChannelPolicy.ASYNCHRONOUS:
+                raw_value = self._find_nearest_value_in_snapshot_with_elapsed(
+                    snapshot, elapsed_times, target_elapsed, tolerance=row_interval * 2.0
+                )
+            
+            # Apply converter
+            if raw_value is not None:
+                try:
+                    converted_value = col_def.converter(raw_value)
+                    result[col_def.name] = converted_value
+                except Exception:
+                    result[col_def.name] = None
+            else:
+                result[col_def.name] = None
+        
+        return result
+    
+    def _find_synchronized_value_in_snapshot(
+        self, snapshot: List[DataPoint], ref_timestamp_ns: Optional[int], tolerance_ns: int
+    ) -> Optional[Any]:
+        """Find synchronized value in pre-computed snapshot (fallback method)."""
+        return self._find_synchronized_value_in_snapshot_optimized(snapshot, ref_timestamp_ns, tolerance_ns)
+    
+    def _find_synchronized_value_in_snapshot_optimized(
+        self, snapshot: List[DataPoint], ref_timestamp_ns: Optional[int], tolerance_ns: int
+    ) -> Optional[Any]:
+        """Find synchronized value in pre-computed snapshot (fallback - creates timestamps)."""
+        if not snapshot or ref_timestamp_ns is None:
+            return None
+        timestamps = [p.timestamp_ns for p in snapshot]
+        return self._find_synchronized_value_with_timestamps(snapshot, timestamps, ref_timestamp_ns, tolerance_ns)
+    
+    def _find_synchronized_value_with_timestamps(
+        self, snapshot: List[DataPoint], timestamps: Optional[List[int]], ref_timestamp_ns: Optional[int], tolerance_ns: int
+    ) -> Optional[Any]:
+        """Find synchronized value using pre-computed timestamps list."""
+        return self._find_synchronized_fast(snapshot, timestamps, ref_timestamp_ns)
+    
+    def _find_synchronized_fast(
+        self, snapshot: List[DataPoint], timestamps: Optional[List[int]], ref_timestamp_ns: Optional[int], tolerance_ns: int = 1000
+    ) -> Optional[Any]:
+        """Fast synchronized value finder (inlined for hot loop)."""
+        if not snapshot or ref_timestamp_ns is None:
+            return None
+        
+        # If timestamps not provided, create them (fallback)
+        if timestamps is None:
+            timestamps = [p.timestamp_ns for p in snapshot]
+        
+        # For small datasets, linear search is faster
+        if len(snapshot) < 50:
+            for i, point in enumerate(snapshot):
+                if abs(timestamps[i] - ref_timestamp_ns) <= tolerance_ns:
+                    return point.value
+            return None
+        
+        # For larger datasets, use binary search on pre-computed timestamps
+        idx = bisect.bisect_left(timestamps, ref_timestamp_ns)
+        
+        # Check points around the insertion point (within tolerance)
+        for i in [idx, idx - 1, idx + 1]:
+            if 0 <= i < len(snapshot):
+                if abs(timestamps[i] - ref_timestamp_ns) <= tolerance_ns:
+                    return snapshot[i].value
+        return None
+    
+    def _interpolate_fast(
+        self, snapshot: List[DataPoint], elapsed_times: Optional[List[float]], target_elapsed: float, tolerance: float
+    ) -> Optional[Any]:
+        """Fast interpolate (inlined for hot loop)."""
+        if not snapshot or not elapsed_times:
+            return None
+        
+        if len(snapshot) < 50:
+            # Linear search for small datasets
+            before_point = None
+            after_point = None
+            before_diff = float('inf')
+            after_diff = float('inf')
+            
+            for i, point in enumerate(snapshot):
+                diff = elapsed_times[i] - target_elapsed
+                if diff <= 0 and abs(diff) < before_diff:
+                    before_point = point
+                    before_diff = abs(diff)
+                elif diff > 0 and diff < after_diff:
+                    after_point = point
+                    after_diff = diff
+            
+            if before_point and after_point:
+                t1, v1 = before_point.elapsed_time, before_point.value
+                t2, v2 = after_point.elapsed_time, after_point.value
+                if abs(t2 - t1) < 1e-9:
+                    return v1
+                try:
+                    if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
+                        return v1 + (v2 - v1) * (target_elapsed - t1) / (t2 - t1)
+                    else:
+                        return v1 if abs(target_elapsed - t1) < abs(target_elapsed - t2) else v2
+                except (TypeError, ValueError):
+                    return v1
+            elif before_point:
+                return before_point.value
+            elif after_point:
+                return after_point.value
+            return None
+        
+        # Binary search using pre-computed elapsed_times
+        idx = bisect.bisect_left(elapsed_times, target_elapsed)
+        
+        # Optimize: check tolerance before accessing points
+        before_idx = idx - 1
+        after_idx = idx
+        before_valid = before_idx >= 0 and abs(elapsed_times[before_idx] - target_elapsed) <= tolerance
+        after_valid = after_idx < len(snapshot) and abs(elapsed_times[after_idx] - target_elapsed) <= tolerance
+        
+        if before_valid and after_valid:
+            before_point = snapshot[before_idx]
+            after_point = snapshot[after_idx]
+            t1, v1 = before_point.elapsed_time, before_point.value
+            t2, v2 = after_point.elapsed_time, after_point.value
+            if abs(t2 - t1) < 1e-9:
+                return v1
+            try:
+                if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
+                    return v1 + (v2 - v1) * (target_elapsed - t1) / (t2 - t1)
+                else:
+                    return v1 if abs(target_elapsed - t1) < abs(target_elapsed - t2) else v2
+            except (TypeError, ValueError):
+                return v1
+        elif before_valid:
+            return snapshot[before_idx].value
+        elif after_valid:
+            return snapshot[after_idx].value
+        return None
+    
+    def _find_nearest_fast(
+        self, snapshot: List[DataPoint], elapsed_times: Optional[List[float]], target_elapsed: float, tolerance: float
+    ) -> Optional[Any]:
+        """Fast nearest finder (inlined for hot loop)."""
+        if not snapshot or not elapsed_times:
+            return None
+        
+        if len(snapshot) < 50:
+            # Linear search for small datasets
+            closest = None
+            min_diff = float('inf')
+            for i, point in enumerate(snapshot):
+                diff = abs(elapsed_times[i] - target_elapsed)
+                if diff < min_diff and diff <= tolerance:
+                    min_diff = diff
+                    closest = point.value
+            return closest
+        
+        # Binary search using pre-computed elapsed_times
+        idx = bisect.bisect_left(elapsed_times, target_elapsed)
+        
+        # Optimize: check both candidates and pick closest
+        closest = None
+        min_diff = float('inf')
+        
+        if idx < len(snapshot):
+            diff = abs(elapsed_times[idx] - target_elapsed)
+            if diff < min_diff and diff <= tolerance:
+                min_diff = diff
+                closest = snapshot[idx].value
+        
+        if idx > 0:
+            diff = abs(elapsed_times[idx - 1] - target_elapsed)
+            if diff < min_diff and diff <= tolerance:
+                closest = snapshot[idx - 1].value
+        
+        return closest
+    
+    def _interpolate_value_in_snapshot(
+        self, snapshot: List[DataPoint], target_elapsed: float, tolerance: float
+    ) -> Optional[Any]:
+        """Interpolate value in pre-computed snapshot (fallback method)."""
+        if not snapshot:
+            return None
+        elapsed_times = [p.elapsed_time for p in snapshot]
+        return self._interpolate_value_in_snapshot_with_elapsed(snapshot, elapsed_times, target_elapsed, tolerance)
+    
+    def _interpolate_value_in_snapshot_with_elapsed(
+        self, snapshot: List[DataPoint], elapsed_times: List[float], target_elapsed: float, tolerance: float
+    ) -> Optional[Any]:
+        """Interpolate value using pre-computed snapshot and elapsed_times list."""
+        if not snapshot or not elapsed_times:
+            return None
+        
+        if len(snapshot) < 50:
+            # Linear search for small datasets
+            before_point = None
+            after_point = None
+            before_diff = float('inf')
+            after_diff = float('inf')
+            
+            for i, point in enumerate(snapshot):
+                diff = elapsed_times[i] - target_elapsed
+                if diff <= 0 and abs(diff) < before_diff:
+                    before_point = point
+                    before_diff = abs(diff)
+                elif diff > 0 and diff < after_diff:
+                    after_point = point
+                    after_diff = diff
+            
+            if before_point and after_point:
+                t1, v1 = before_point.elapsed_time, before_point.value
+                t2, v2 = after_point.elapsed_time, after_point.value
+                if abs(t2 - t1) < 1e-9:
+                    return v1
+                try:
+                    if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
+                        return v1 + (v2 - v1) * (target_elapsed - t1) / (t2 - t1)
+                    else:
+                        return v1 if abs(target_elapsed - t1) < abs(target_elapsed - t2) else v2
+                except (TypeError, ValueError):
+                    return v1
+            elif before_point:
+                return before_point.value
+            elif after_point:
+                return after_point.value
+            return None
+        
+        # Binary search using pre-computed elapsed_times
+        idx = bisect.bisect_left(elapsed_times, target_elapsed)
+        
+        before_point = snapshot[idx - 1] if idx > 0 and abs(elapsed_times[idx - 1] - target_elapsed) <= tolerance else None
+        after_point = snapshot[idx] if idx < len(snapshot) and abs(elapsed_times[idx] - target_elapsed) <= tolerance else None
+        
+        if before_point and after_point:
+            t1, v1 = before_point.elapsed_time, before_point.value
+            t2, v2 = after_point.elapsed_time, after_point.value
+            if abs(t2 - t1) < 1e-9:
+                return v1
+            try:
+                if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
+                    return v1 + (v2 - v1) * (target_elapsed - t1) / (t2 - t1)
+                else:
+                    return v1 if abs(target_elapsed - t1) < abs(target_elapsed - t2) else v2
+            except (TypeError, ValueError):
+                return v1
+        elif before_point:
+            return before_point.value
+        elif after_point:
+            return after_point.value
+        return None
+    
+    def _find_nearest_value_in_snapshot(
+        self, snapshot: List[DataPoint], target_elapsed: float, tolerance: float
+    ) -> Optional[Any]:
+        """Find nearest value in pre-computed snapshot (fallback method)."""
+        if not snapshot:
+            return None
+        elapsed_times = [p.elapsed_time for p in snapshot]
+        return self._find_nearest_value_in_snapshot_with_elapsed(snapshot, elapsed_times, target_elapsed, tolerance)
+    
+    def _find_nearest_value_in_snapshot_with_elapsed(
+        self, snapshot: List[DataPoint], elapsed_times: List[float], target_elapsed: float, tolerance: float
+    ) -> Optional[Any]:
+        """Find nearest value using pre-computed snapshot and elapsed_times list."""
+        if not snapshot or not elapsed_times:
+            return None
+        
+        if len(snapshot) < 50:
+            # Linear search for small datasets
+            closest = None
+            min_diff = float('inf')
+            for i, point in enumerate(snapshot):
+                diff = abs(elapsed_times[i] - target_elapsed)
+                if diff < min_diff and diff <= tolerance:
+                    min_diff = diff
+                    closest = point.value
+            return closest
+        
+        # Binary search using pre-computed elapsed_times
+        idx = bisect.bisect_left(elapsed_times, target_elapsed)
+        
+        candidates = []
+        if idx < len(snapshot):
+            candidates.append((elapsed_times[idx], snapshot[idx]))
+        if idx > 0:
+            candidates.append((elapsed_times[idx - 1], snapshot[idx - 1]))
+        
+        closest = None
+        min_diff = float('inf')
+        for elapsed, point in candidates:
+            diff = abs(elapsed - target_elapsed)
+            if diff < min_diff and diff <= tolerance:
+                min_diff = diff
+                closest = point.value
+        
+        return closest
+    
     def _find_point_at_time(
         self,
         data_points: List[DataPoint],
         target_elapsed: float,
         tolerance: float,
     ) -> Optional[Tuple[Any, float, int]]:
-        """Find data point closest to target elapsed time.
+        """Find data point closest to target elapsed time using binary search.
         
         Returns:
             Tuple of (value, elapsed_time, timestamp_ns) or None
@@ -246,23 +777,66 @@ class VirtualDatabase:
         if not data_points:
             return None
         
-        # Create snapshot to avoid RuntimeError if deque is modified during iteration
-        # Always snapshot first, then filter if needed for optimization
-        snapshot = list(data_points)
+        # For small datasets, linear search is faster due to cache locality
+        count = len(data_points) if hasattr(data_points, '__len__') else None
+        if count is not None and count < 50:
+            # Linear search for very small datasets
+            closest = None
+            min_diff = float('inf')
+            for point in data_points:
+                diff = abs(point.elapsed_time - target_elapsed)
+                if diff < min_diff and diff <= tolerance:
+                    min_diff = diff
+                    closest = (point.value, point.elapsed_time, point.timestamp_ns)
+            return closest
         
-        # Optimize by filtering to relevant time window (if snapshot is large)
-        if len(snapshot) > 1000:
-            min_time = target_elapsed - tolerance
-            max_time = target_elapsed + tolerance
-            snapshot = [p for p in snapshot if min_time <= p.elapsed_time <= max_time]
+        # For larger datasets, create snapshot and use binary search
+        # Optimize: only create snapshot if needed (deque doesn't support indexing)
+        if hasattr(data_points, '__getitem__'):
+            # It's already a list-like structure that supports indexing
+            snapshot = data_points
+        else:
+            # It's a deque, need to create snapshot
+            # For very large datasets, filter to time window first
+            if count is not None and count > 10000:
+                time_window = max(tolerance * 10, 0.01)
+                min_time = target_elapsed - time_window
+                max_time = target_elapsed + time_window
+                snapshot = [p for p in data_points if min_time <= p.elapsed_time <= max_time]
+            else:
+                snapshot = list(data_points)
         
         if not snapshot:
             return None
         
+        # Binary search using bisect
+        # Create elapsed_times list only once for this snapshot
+        # For very small snapshots, just check all points
+        if len(snapshot) < 10:
+            closest = None
+            min_diff = float('inf')
+            for point in snapshot:
+                diff = abs(point.elapsed_time - target_elapsed)
+                if diff < min_diff and diff <= tolerance:
+                    min_diff = diff
+                    closest = (point.value, point.elapsed_time, point.timestamp_ns)
+            return closest
+        
+        # Use bisect on elapsed_times list
+        elapsed_times = [p.elapsed_time for p in snapshot]
+        idx = bisect.bisect_left(elapsed_times, target_elapsed)
+        
+        # Check the point at idx and idx-1 (the two closest points)
+        candidates = []
+        if idx < len(snapshot):
+            candidates.append(snapshot[idx])
+        if idx > 0:
+            candidates.append(snapshot[idx - 1])
+        
+        # Find the closest candidate within tolerance
         closest = None
         min_diff = float('inf')
-        
-        for point in snapshot:
+        for point in candidates:
             diff = abs(point.elapsed_time - target_elapsed)
             if diff < min_diff and diff <= tolerance:
                 min_diff = diff
@@ -276,7 +850,7 @@ class VirtualDatabase:
         ref_timestamp_ns: Optional[int],
         tolerance_ns: int = 1000,
     ) -> Optional[Any]:
-        """Find value with exact timestamp match (for synchronized channels).
+        """Find value with exact timestamp match using binary search (for synchronized channels).
         
         Args:
             data_points: List or deque of data points to search
@@ -289,11 +863,45 @@ class VirtualDatabase:
         if ref_timestamp_ns is None:
             return None
         
-        # Create snapshot to avoid RuntimeError if deque is modified during iteration
-        # For synchronized search, we need to check all points (timestamp-based, not time-based)
-        snapshot = list(data_points)
+        # For small datasets, linear search is faster
+        count = len(data_points) if hasattr(data_points, '__len__') else None
+        if count is not None and count < 50:
+            for point in data_points:
+                if abs(point.timestamp_ns - ref_timestamp_ns) <= tolerance_ns:
+                    return point.value
+            return None
         
-        for point in snapshot:
+        # For larger datasets, create snapshot and use binary search
+        if hasattr(data_points, '__getitem__'):
+            snapshot = data_points
+        else:
+            # It's a deque, need to create snapshot
+            if count is not None and count > 10000:
+                window_ns = max(tolerance_ns * 10, 10000)
+                min_timestamp_ns = ref_timestamp_ns - window_ns
+                max_timestamp_ns = ref_timestamp_ns + window_ns
+                snapshot = [p for p in data_points if min_timestamp_ns <= p.timestamp_ns <= max_timestamp_ns]
+            else:
+                snapshot = list(data_points)
+        
+        if not snapshot:
+            return None
+        
+        # Binary search on timestamps
+        timestamps = [p.timestamp_ns for p in snapshot]
+        idx = bisect.bisect_left(timestamps, ref_timestamp_ns)
+        
+        # Check points around the insertion point (within tolerance)
+        candidates = []
+        if idx < len(snapshot):
+            candidates.append(snapshot[idx])
+        if idx > 0:
+            candidates.append(snapshot[idx - 1])
+        if idx + 1 < len(snapshot):
+            candidates.append(snapshot[idx + 1])
+        
+        # Find the first candidate within tolerance
+        for point in candidates:
             if abs(point.timestamp_ns - ref_timestamp_ns) <= tolerance_ns:
                 return point.value
         
@@ -305,7 +913,7 @@ class VirtualDatabase:
         target_elapsed: float,
         tolerance: float,
     ) -> Optional[Any]:
-        """Interpolate value at target time (for interpolated channels).
+        """Interpolate value at target time using binary search (for interpolated channels).
         
         Args:
             data_points: List or deque of data points to search
@@ -318,30 +926,90 @@ class VirtualDatabase:
         if not data_points:
             return None
         
-        # Create snapshot to avoid RuntimeError if deque is modified during iteration
-        # Always snapshot first, then filter if needed for optimization
-        snapshot = list(data_points)
+        # For small datasets, linear search is faster
+        count = len(data_points) if hasattr(data_points, '__len__') else None
+        if count is not None and count < 50:
+            # Linear search for very small datasets
+            before_point = None
+            after_point = None
+            before_diff = float('inf')
+            after_diff = float('inf')
+            
+            for point in data_points:
+                diff = point.elapsed_time - target_elapsed
+                if diff <= 0 and abs(diff) < before_diff:
+                    before_point = point
+                    before_diff = abs(diff)
+                elif diff > 0 and diff < after_diff:
+                    after_point = point
+                    after_diff = diff
+            
+            # Interpolate if we have both points
+            if before_point and after_point:
+                t1, v1 = before_point.elapsed_time, before_point.value
+                t2, v2 = after_point.elapsed_time, after_point.value
+                if abs(t2 - t1) < 1e-9:
+                    return v1
+                try:
+                    if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
+                        interpolated = v1 + (v2 - v1) * (target_elapsed - t1) / (t2 - t1)
+                        return interpolated
+                    else:
+                        return v1 if abs(target_elapsed - t1) < abs(target_elapsed - t2) else v2
+                except (TypeError, ValueError):
+                    return v1
+            elif before_point:
+                return before_point.value
+            elif after_point:
+                return after_point.value
+            return None
         
-        # Optimize by filtering to relevant time window (if snapshot is large)
-        if len(snapshot) > 1000:
-            min_time = target_elapsed - tolerance
-            max_time = target_elapsed + tolerance
-            snapshot = [p for p in snapshot if min_time <= p.elapsed_time <= max_time]
+        # For larger datasets, create snapshot and use binary search
+        if hasattr(data_points, '__getitem__'):
+            snapshot = data_points
+        else:
+            # It's a deque, need to create snapshot
+            if count is not None and count > 10000:
+                time_window = max(tolerance * 10, 0.01)
+                min_time = target_elapsed - time_window
+                max_time = target_elapsed + time_window
+                snapshot = [p for p in data_points if min_time <= p.elapsed_time <= max_time]
+            else:
+                snapshot = list(data_points)
+        
+        if not snapshot:
+            return None
+        
+        # Binary search for large datasets
+        elapsed_times = [p.elapsed_time for p in snapshot]
+        idx = bisect.bisect_left(elapsed_times, target_elapsed)
         
         # Find points before and after target
         before_point = None
         after_point = None
-        before_diff = float('inf')
-        after_diff = float('inf')
         
-        for point in snapshot:
-            diff = point.elapsed_time - target_elapsed
-            if diff <= 0 and abs(diff) < before_diff:
-                before_point = point
-                before_diff = abs(diff)
-            elif diff > 0 and diff < after_diff:
-                after_point = point
-                after_diff = diff
+        # Point before (or at) target
+        if idx > 0:
+            before_point = snapshot[idx - 1]
+            if abs(before_point.elapsed_time - target_elapsed) > tolerance:
+                before_point = None
+        
+        # Point after target
+        if idx < len(snapshot):
+            after_point = snapshot[idx]
+            if abs(after_point.elapsed_time - target_elapsed) > tolerance:
+                after_point = None
+        
+        # Also check point at idx-2 and idx+1 for better interpolation
+        if idx > 1 and before_point is None:
+            candidate = snapshot[idx - 2]
+            if abs(candidate.elapsed_time - target_elapsed) <= tolerance:
+                before_point = candidate
+        
+        if idx + 1 < len(snapshot) and after_point is None:
+            candidate = snapshot[idx + 1]
+            if abs(candidate.elapsed_time - target_elapsed) <= tolerance:
+                after_point = candidate
         
         # If we have points on both sides, interpolate
         if before_point and after_point:
@@ -390,20 +1058,50 @@ class VirtualDatabase:
         if not data_points:
             return None
         
-        # Create snapshot to avoid RuntimeError if deque is modified during iteration
-        # Always snapshot first, then filter if needed for optimization
-        snapshot = list(data_points)
+        # For small datasets, linear search is faster
+        count = len(data_points) if hasattr(data_points, '__len__') else None
+        if count is not None and count < 50:
+            # Linear search for very small datasets
+            closest = None
+            min_diff = float('inf')
+            for point in data_points:
+                diff = abs(point.elapsed_time - target_elapsed)
+                if diff < min_diff and diff <= tolerance:
+                    min_diff = diff
+                    closest = point.value
+            return closest
         
-        # Optimize by filtering to relevant time window (if snapshot is large)
-        if len(snapshot) > 1000:
-            min_time = target_elapsed - tolerance
-            max_time = target_elapsed + tolerance
-            snapshot = [p for p in snapshot if min_time <= p.elapsed_time <= max_time]
+        # For larger datasets, create snapshot and use binary search
+        if hasattr(data_points, '__getitem__'):
+            snapshot = data_points
+        else:
+            # It's a deque, need to create snapshot
+            if count is not None and count > 10000:
+                time_window = max(tolerance * 10, 0.01)
+                min_time = target_elapsed - time_window
+                max_time = target_elapsed + time_window
+                snapshot = [p for p in data_points if min_time <= p.elapsed_time <= max_time]
+            else:
+                snapshot = list(data_points)
         
+        if not snapshot:
+            return None
+        
+        # Binary search for large datasets
+        elapsed_times = [p.elapsed_time for p in snapshot]
+        idx = bisect.bisect_left(elapsed_times, target_elapsed)
+        
+        # Check the point at idx and idx-1 (the two closest points)
+        candidates = []
+        if idx < len(snapshot):
+            candidates.append(snapshot[idx])
+        if idx > 0:
+            candidates.append(snapshot[idx - 1])
+        
+        # Find the closest candidate within tolerance
         closest = None
         min_diff = float('inf')
-        
-        for point in snapshot:
+        for point in candidates:
             diff = abs(point.elapsed_time - target_elapsed)
             if diff < min_diff and diff <= tolerance:
                 min_diff = diff
@@ -486,6 +1184,8 @@ class VirtualDatabase:
         self.rows.clear()
         self._built = False
         self._last_built_time = None
+        self._snapshot_cache.clear()
+        self._ref_channel_cache = None
     
     def rebuild(self) -> None:
         """Rebuild the virtual database from the IO database.
@@ -493,8 +1193,11 @@ class VirtualDatabase:
         This method is incremental - it only builds new rows since the last build,
         making it much more efficient than a full rebuild.
         """
-        # Get reference channel data
-        ref_channel = self.io_database.get_channel(self.reference_channel)
+        # Use cached reference channel if available, otherwise get it
+        if self._ref_channel_cache is None:
+            self._ref_channel_cache = self.io_database.get_channel(self.reference_channel)
+        ref_channel = self._ref_channel_cache
+        
         if not ref_channel or ref_channel.count == 0:
             return  # No data to build from
         
@@ -526,17 +1229,134 @@ class VirtualDatabase:
         # we simply add row_interval to get the next row time
         start_time = self._last_built_time + row_interval
         
+        # Pre-compute snapshots for incremental rebuild (similar to build)
+        # This avoids repeated deque-to-list conversions during the rebuild loop
+        # Also pre-compute elapsed_times and timestamps lists for binary search efficiency
+        channel_snapshots: Dict[str, List[DataPoint]] = {}
+        channel_elapsed_times: Dict[str, List[float]] = {}
+        channel_timestamps: Dict[str, List[int]] = {}  # For synchronized channels
+        for col_def in self.columns:
+            if col_def.channel_path and col_def.channel_path not in channel_snapshots:
+                channel_data = self.io_database.get_channel(col_def.channel_path)
+                if channel_data:
+                    snapshot = list(channel_data.data_points)
+                    channel_snapshots[col_def.channel_path] = snapshot
+                    # Pre-compute elapsed_times for binary search
+                    channel_elapsed_times[col_def.channel_path] = [p.elapsed_time for p in snapshot]
+                    # Pre-compute timestamps for synchronized channels
+                    if col_def.policy == ChannelPolicy.SYNCHRONIZED:
+                        channel_timestamps[col_def.channel_path] = [p.timestamp_ns for p in snapshot]
+        
+        # Also snapshot reference channel and pre-compute its elapsed_times
+        ref_snapshot = list(ref_channel.data_points)
+        ref_elapsed_times = [p.elapsed_time for p in ref_snapshot]
+        
+        # Pre-index column data to avoid dictionary lookups in hot loop
+        # Cache all attributes to reduce attribute access overhead
+        column_data = []
+        for col_def in self.columns:
+            col_name = col_def.name
+            col_policy = col_def.policy
+            converter = col_def.converter
+            if col_def.channel_path is None:
+                column_data.append((col_name, col_policy, converter, None, None, None))
+            else:
+                snapshot = channel_snapshots.get(col_def.channel_path)
+                elapsed_times = channel_elapsed_times.get(col_def.channel_path) if snapshot else None
+                timestamps = channel_timestamps.get(col_def.channel_path) if col_policy == ChannelPolicy.SYNCHRONIZED else None
+                column_data.append((col_name, col_policy, converter, snapshot, elapsed_times, timestamps))
+        
         # Build only new rows incrementally
+        # Limit rows per rebuild to avoid blocking (process in batches)
+        # At 6 kHz, we might accumulate many rows between rebuilds
+        # Increased limit for faster processing when catching up
+        max_rows_per_rebuild = 10000  # Process up to 10k rows per rebuild call
+        rows_built = 0
+        
+        # Use incremental search - start from a reasonable position using binary search
+        ref_search_idx = 0
+        if ref_elapsed_times and self._last_built_time is not None:
+            # Use binary search to find starting position
+            ref_search_idx = bisect.bisect_left(ref_elapsed_times, self._last_built_time)
+            # Start a bit before to be safe
+            ref_search_idx = max(0, ref_search_idx - 10)
+        
+        # Pre-compute tolerance values
+        ref_tolerance = row_interval * 0.5
+        interp_tolerance = row_interval * 2.0
+        
         current_time = start_time
         last_row_time = self._last_built_time
-        while current_time <= last_elapsed:
-            # Get data for all columns at this timestamp
-            row_data = self._get_row_data_at_time(current_time, row_interval)
+        while current_time <= last_elapsed and rows_built < max_rows_per_rebuild:
+            # Find reference point using optimized incremental search
+            # Since rows are sequential, we can do a forward linear scan from last position
+            ref_point = None
+            if ref_snapshot and ref_elapsed_times:
+                # Start from last known position and scan forward
+                while ref_search_idx < len(ref_elapsed_times):
+                    elapsed = ref_elapsed_times[ref_search_idx]
+                    if elapsed >= current_time - ref_tolerance:
+                        # Found a candidate - check if it's within tolerance
+                        if abs(elapsed - current_time) <= ref_tolerance:
+                            point = ref_snapshot[ref_search_idx]
+                            ref_point = (point.value, point.elapsed_time, point.timestamp_ns)
+                            break
+                        elif elapsed > current_time + ref_tolerance:
+                            # Gone too far, check previous point
+                            if ref_search_idx > 0:
+                                prev_elapsed = ref_elapsed_times[ref_search_idx - 1]
+                                if abs(prev_elapsed - current_time) <= ref_tolerance:
+                                    point = ref_snapshot[ref_search_idx - 1]
+                                    ref_point = (point.value, point.elapsed_time, point.timestamp_ns)
+                                    ref_search_idx -= 1
+                            break
+                    ref_search_idx += 1
+                
+                # Fallback to binary search if linear scan didn't find it
+                if ref_point is None and ref_search_idx >= len(ref_elapsed_times):
+                    # Reset and use binary search
+                    idx = bisect.bisect_left(ref_elapsed_times, current_time)
+                    if idx < len(ref_snapshot):
+                        point = ref_snapshot[idx]
+                        if abs(point.elapsed_time - current_time) <= ref_tolerance:
+                            ref_point = (point.value, point.elapsed_time, point.timestamp_ns)
+                            ref_search_idx = idx
+                    if ref_point is None and idx > 0:
+                        point = ref_snapshot[idx - 1]
+                        if abs(point.elapsed_time - current_time) <= ref_tolerance:
+                            ref_point = (point.value, point.elapsed_time, point.timestamp_ns)
+                            ref_search_idx = idx - 1
+            
+            ref_timestamp_ns = ref_point[2] if ref_point else None
+            
+            # Process columns (inlined for speed)
+            # Pre-allocate dictionary with known size to avoid rehashing
+            row_data = dict.fromkeys((col_name for col_name, _, _, _, _, _ in column_data), None)
+            
+            for col_name, col_policy, converter, snapshot, elapsed_times, timestamps in column_data:
+                if snapshot is None:
+                    continue  # Already set to None
+                
+                # Apply policy-specific matching (use cached policy enum)
+                raw_value = None
+                if col_policy == ChannelPolicy.SYNCHRONIZED:
+                    raw_value = self._find_synchronized_fast(snapshot, timestamps, ref_timestamp_ns)
+                elif col_policy == ChannelPolicy.INTERPOLATED:
+                    raw_value = self._interpolate_fast(snapshot, elapsed_times, current_time, interp_tolerance)
+                elif col_policy == ChannelPolicy.ASYNCHRONOUS:
+                    raw_value = self._find_nearest_fast(snapshot, elapsed_times, current_time, interp_tolerance)
+                
+                # Apply converter (use cached converter function)
+                if raw_value is not None:
+                    try:
+                        row_data[col_name] = converter(raw_value)
+                    except Exception:
+                        pass  # Already None
             
             # Create virtual row
-            row = VirtualRow(timestamp=current_time, data=row_data)
-            self.rows.append(row)
+            self.rows.append(VirtualRow(timestamp=current_time, data=row_data))
             last_row_time = current_time
+            rows_built += 1
             
             # Advance to next row time
             current_time += row_interval
