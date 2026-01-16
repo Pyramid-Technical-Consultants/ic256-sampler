@@ -6,7 +6,7 @@ This directory contains the unit test suite for IC256 Sampler.
 
 - **`test_utils.py`** - Tests for utility functions (IP validation, device validation with mocks)
 - **`test_device_paths.py`** - Tests for device path configuration and helper functions
-- **`test_data_collection.py`** - Tests for data collection functions (conversions, headers, caching)
+- **`test_ic256_model.py`** - Tests for IC256Model conversion functions and column definitions
 - **`test_config.py`** - Tests for configuration management (loading, saving, validation)
 - **`test_integration.py`** - Integration tests that require live device connections (optional)
 - **`conftest.py`** - Pytest configuration and shared fixtures
@@ -75,9 +75,11 @@ Current test coverage includes:
 - ✅ HTTP URL building
 - ✅ Error handling for invalid categories/keys
 
-### Data Collection Module (`test_data_collection.py`)
+### IC256 Model Module (`test_ic256_model.py`)
 - ✅ Mean value conversion (X/Y axis, invalid values)
 - ✅ Sigma value conversion (X/Y axis, invalid values)
+- ✅ IC256Model converter methods
+- ✅ Column definition creation
 - ✅ Gaussian value processing
 - ✅ CSV header generation (IC256, TX2, unknown devices)
 - ✅ Time binning function

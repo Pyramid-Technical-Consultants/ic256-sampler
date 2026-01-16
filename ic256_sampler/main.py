@@ -13,15 +13,16 @@ from typing import Dict, Optional, Tuple, Any
 import tempfile
 import requests
 from .gui import GUI
-from .data_collection import set_up_device
+from .ic256_model import IC256Model
 from .utils import is_valid_device
 from .device_paths import IC256_45_PATHS, build_http_url
 from .device_manager import (
+    DeviceManager,
     IC256_CONFIG,
     TX2_CONFIG,
-    setup_device_thread,
     get_timestamp_strings,
 )
+from .model_collector import ModelCollector, collect_data_with_model
 from .gui_helpers import (
     safe_gui_update,
     log_message_safe,
@@ -73,8 +74,10 @@ class Application:
         """Initialize the application."""
         self.window: Optional[GUI] = None
         self.stop_event = threading.Event()
-        self.device_threads: Dict[str, threading.Thread] = {}
         self.device_statistics: Dict[str, Dict[str, Any]] = {}  # device_name -> {rows, file_size, file_path}
+        self.collector: Optional[ModelCollector] = None
+        self.device_manager: Optional[DeviceManager] = None
+        self.collector_thread: Optional[threading.Thread] = None
     
     def _get_gui_values(self) -> Tuple[str, str, str, str]:
         """Get values from GUI entries.
@@ -169,61 +172,61 @@ class Application:
         sampling_rate = self._get_sampling_rate()
         ic256_ip, tx2_ip, note, save_folder = self._get_gui_values()
 
-        # Initialize device threads dictionary and statistics
-        self.device_threads = {}
-        self.device_statistics = {}
+        # Create DeviceManager to handle all device connections
+        device_manager = DeviceManager()
+        device_manager.stop_event = self.stop_event
 
-        # Set up IC256 device
-        ic256_stats: Dict[str, Any] = {}
-        ic256_thread = setup_device_thread(
-            IC256_CONFIG,
-            ic256_ip,
-            sampling_rate,
-            date,
-            time_str,
-            note,
-            save_folder,
-            self.stop_event,
-            self._log_callback,
-            ic256_stats,
-        )
-        if ic256_thread:
-            self.device_threads[IC256_CONFIG.device_name] = ic256_thread
-            self.device_statistics[IC256_CONFIG.device_name] = ic256_stats
-
-        # Set up TX2 device (optional)
-        tx2_stats: Dict[str, Any] = {}
-        tx2_thread = setup_device_thread(
-            TX2_CONFIG,
-            tx2_ip,
-            sampling_rate,
-            date,
-            time_str,
-            note,
-            save_folder,
-            self.stop_event,
-            self._log_callback,
-            tx2_stats,
-        )
-        if tx2_thread:
-            self.device_threads[TX2_CONFIG.device_name] = tx2_thread
-            self.device_statistics[TX2_CONFIG.device_name] = tx2_stats
+        # Add devices to manager
+        devices_added = []
+        if ic256_ip:
+            if device_manager.add_device(IC256_CONFIG, ic256_ip, sampling_rate, self._log_callback):
+                devices_added.append(IC256_CONFIG.device_name)
+        
+        if tx2_ip:
+            if device_manager.add_device(TX2_CONFIG, tx2_ip, sampling_rate, self._log_callback):
+                devices_added.append(TX2_CONFIG.device_name)
 
         # Check if any devices were found
-        if len(self.device_threads) == 0:
+        if len(devices_added) == 0:
             show_message_safe(self.window, "No device found. Please try again.", "red")
             log_message_safe(self.window, "Data collection start failed: No valid devices found", "ERROR")
             set_button_state_safe(self.window, "start_button", "normal")
             return
 
+        # Create ModelCollector using the first device's model and reference channel
+        # For now, we'll use IC256 if available, otherwise TX2
+        primary_device_config = IC256_CONFIG if IC256_CONFIG.device_name in devices_added else TX2_CONFIG
+        primary_model = primary_device_config.model_creator()
+        reference_channel = primary_model.get_reference_channel()
+        
+        file_name = f"{primary_device_config.filename_prefix}-{date}-{time_str}.csv"
+        file_path = f"{save_folder}/{file_name}"
+        
+        collector = ModelCollector(
+            device_manager=device_manager,
+            model=primary_model,
+            reference_channel=reference_channel,
+            sampling_rate=sampling_rate,
+            file_path=file_path,
+            device_name=primary_device_config.device_type.lower(),
+            note=note,
+        )
+        
+        # Initialize statistics
+        self.device_statistics = {device: {"rows": 0, "file_size": 0} for device in devices_added}
+        collector.statistics = self.device_statistics.get(primary_device_config.device_name, {})
+
         # Show success message
-        device_names = list(self.device_threads.keys())
-        device_list_str = ", ".join(device_names)
-        verb = "is" if len(device_names) == 1 else "are"
+        device_list_str = ", ".join(devices_added)
+        verb = "is" if len(devices_added) == 1 else "are"
         
         show_message_safe(self.window, f" {device_list_str} {verb} collecting.", "green")
         log_message_safe(self.window, f"Data collection started: {device_list_str}", "INFO")
         set_button_state_safe(self.window, "stop_button", "normal")
+
+        # Store collector and device manager for cleanup
+        self.collector = collector
+        self.device_manager = device_manager
 
         # Start all threads
         time_thread = threading.Thread(
@@ -241,9 +244,17 @@ class Application:
         )
         stats_thread.start()
         
-        for device_name, thread in self.device_threads.items():
-            thread.start()
-            log_message_safe(self.window, f"Started data collection thread: {device_name}", "INFO")
+        # Start ModelCollector thread (which starts DeviceManager)
+        collector_thread = threading.Thread(
+            target=collect_data_with_model,
+            name="model_collector",
+            daemon=True,
+            args=(collector, self.stop_event),
+        )
+        collector_thread.start()
+        self.collector_thread = collector_thread
+        
+        log_message_safe(self.window, f"Started data collection: {device_list_str}", "INFO")
     
     def _configure_and_start(self) -> None:
         """Configure device and start data collection in a background thread."""
@@ -352,6 +363,36 @@ class Application:
             restore_thread.start()
     
     def stop_collection(self) -> None:
+        """Stop data collection and cleanup resources."""
+        if not self.window:
+            return
+        
+        self.stop_event.set()
+        
+        # Stop collector and device manager
+        if self.collector:
+            try:
+                self.collector.stop()
+            except Exception:
+                pass
+        
+        if self.device_manager:
+            try:
+                self.device_manager.stop()
+            except Exception:
+                pass
+        
+        # Wait for collector thread
+        if self.collector_thread and self.collector_thread.is_alive():
+            self.collector_thread.join(timeout=THREAD_JOIN_TIMEOUT)
+        
+        # Reset GUI
+        set_button_state_safe(self.window, "stop_button", "disabled")
+        set_button_state_safe(self.window, "start_button", "normal")
+        show_message_safe(self.window, "Data collection stopped.", "blue")
+        log_message_safe(self.window, "Data collection stopped", "INFO")
+    
+    def _stop_collection_old(self) -> None:
         """Stop data collection and restore device settings."""
         if not self.window:
             return
@@ -394,7 +435,10 @@ class Application:
             log_message_safe(self.window, f"Setting up {device_type} device at {ip_address}", "INFO")
             client = IGXWebsocketClient(ip_address)
             device_name = "ic256_45" if device_type == "IC256" else "tx2"
-            set_up_device(client, device_name, sampling_rate)
+            # Set up device using model
+            if "ic256" in device_name.lower():
+                model = IC256Model()
+                model.setup_device(client, sampling_rate)
             client.close()
             log_message_safe(self.window, f"{device_type} device setup successful at {ip_address}", "INFO")
             return client

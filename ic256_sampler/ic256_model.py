@@ -1,11 +1,13 @@
 """IC256 Device Model.
 
 This module encapsulates all IC256-specific conversion logic, magic numbers,
-and device-specific behavior. This keeps VirtualDatabase generic and device-agnostic.
+device-specific behavior, and device setup. This keeps VirtualDatabase generic and device-agnostic.
 """
 
-from typing import Callable, Any
+from typing import Callable, Any, Dict
 from .virtual_database import Converter, ColumnDefinition, ChannelPolicy
+from .igx_client import IGXWebsocketClient
+from .device_paths import IC256_45_PATHS
 
 
 # IC256-specific constants
@@ -176,3 +178,53 @@ class IC256Model:
     def get_error_gauss() -> int:
         """Get error value for gaussian fields."""
         return ERROR_GAUSS
+    
+    @staticmethod
+    def setup_device(device_client: IGXWebsocketClient, frequency: int) -> None:
+        """Set up IC256 device sampling frequencies.
+        
+        Args:
+            device_client: IGXWebsocketClient connected to IC256 device
+            frequency: Sampling frequency in Hz
+        """
+        ic256_fields = {
+            "primary_sample": device_client.field(
+                IC256_45_PATHS["single_dose_module"]["sample_frequency"]
+            ),
+            "integration_freq": device_client.field(
+                IC256_45_PATHS["adc"]["integration_frequency"]
+            ),
+            "sample_freq": device_client.field(
+                IC256_45_PATHS["adc"]["sample_frequency"]
+            ),
+        }
+        device_client.sendSubscribeFields({ic256_fields[field]: False for field in ic256_fields})
+        ic256_fields["primary_sample"].setValue(frequency)
+        ic256_fields["integration_freq"].setValue(frequency)
+        ic256_fields["sample_freq"].setValue(frequency)
+    
+    @staticmethod
+    def get_field_to_path_mapping() -> Dict[str, str]:
+        """Get the mapping from field names to channel paths for IC256.
+        
+        Returns:
+            Dictionary mapping field names to channel paths
+        """
+        return {
+            "mean_channel_a": IC256_45_PATHS["adc"]["gaussian_fit_a_mean"],
+            "sigma_channel_a": IC256_45_PATHS["adc"]["gaussian_fit_a_sigma"],
+            "mean_channel_b": IC256_45_PATHS["adc"]["gaussian_fit_b_mean"],
+            "sigma_channel_b": IC256_45_PATHS["adc"]["gaussian_fit_b_sigma"],
+            "primary_channel": IC256_45_PATHS["adc"]["primary_dose"],
+            "channel_sum": IC256_45_PATHS["adc"]["channel_sum"],
+            "external_trigger": IC256_45_PATHS["adc"]["gate_signal"],
+        }
+    
+    @staticmethod
+    def get_reference_channel() -> str:
+        """Get the reference channel path for IC256.
+        
+        Returns:
+            Channel path to use as timing reference
+        """
+        return IC256_45_PATHS["adc"]["channel_sum"]

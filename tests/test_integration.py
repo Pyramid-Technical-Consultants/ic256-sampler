@@ -16,7 +16,9 @@ from datetime import datetime
 from ic256_sampler.utils import is_valid_device, is_valid_ipv4
 from ic256_sampler.igx_client import IGXWebsocketClient
 from ic256_sampler.device_manager import setup_device_thread, DeviceConfig, IC256_CONFIG
-from ic256_sampler.data_collection import collect_data
+from ic256_sampler.model_collector import ModelCollector, collect_data_with_model, set_up_device
+from ic256_sampler.ic256_model import IC256Model
+from ic256_sampler.device_paths import IC256_45_PATHS
 
 
 # Mark all tests in this file as integration tests
@@ -125,18 +127,33 @@ class TestDataCollectionRate:
                 channels = IC256_CONFIG.channel_creator(client)
                 env_channels = IC256_CONFIG.env_channel_creator(client) if IC256_CONFIG.env_channel_creator else None
                 
-                collect_data(
+                # Create model and set up device
+                model = IC256Model()
+                model.setup_device(client, sampling_rate)
+                
+                # Get reference channel and field mapping from model
+                reference_channel = model.get_reference_channel()
+                field_to_path = model.get_field_to_path_mapping()
+                
+                # Create ModelCollector
+                collector = ModelCollector(
+                    model=model,
                     device_client=client,
                     channels=channels,
-                    env_channels=env_channels,
-                    file_name=test_file.name,
+                    field_to_path=field_to_path,
+                    reference_channel=reference_channel,
+                    sampling_rate=sampling_rate,
+                    file_path=str(test_file),
                     device_name="ic256_45",
                     note="Integration test",
-                    save_folder=str(test_file.parent),
-                    stop_event=stop_event,
-                    sampling_rate=sampling_rate,
-                    statistics=statistics,
+                    env_channels=env_channels,
                 )
+                
+                # Share statistics
+                collector.statistics = statistics
+                
+                # Run collection
+                collect_data_with_model(collector, stop_event)
             except Exception as e:
                 print(f"Data collection error: {e}")
                 import traceback
