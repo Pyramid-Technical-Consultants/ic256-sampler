@@ -9,7 +9,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 import threading
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict
 
 from .utils import is_valid_device
 from .config import update_file_json, init_ip
@@ -185,7 +185,76 @@ class GUI:
         current_date = now.strftime("%Y-%m-%d")
         current_time = now.strftime("%H:%M:%S")
         self.display_time.config(text=f"{current_date} {current_time}")
+        
+        # Update connection status label position based on clock width
+        # Position status indicator right after the clock text
+        if hasattr(self, 'connection_status_label') and hasattr(self, 'display_time'):
+            try:
+                clock_width = self.display_time.winfo_reqwidth()
+                self.connection_status_label.place(x=350 + clock_width + 10, y=3)
+                if hasattr(self, 'connection_status_text'):
+                    self.connection_status_text.place(x=350 + clock_width + 30, y=3)
+            except (tk.TclError, AttributeError):
+                pass  # Widget not yet rendered
+        
         self.root.after(1000, self.update_date_time)
+    
+    def update_connection_status(self, status_dict: Dict[str, str]) -> None:
+        """Update connection status display.
+        
+        Args:
+            status_dict: Dictionary mapping device names to status strings
+                        ("connected", "disconnected", "error")
+        """
+        if not hasattr(self, 'connection_status_label'):
+            return  # GUI not fully initialized yet
+        
+        try:
+            if not status_dict:
+                # No connections
+                self.connection_status_label.config(text="●", fg=COLORS["text_secondary"])
+                if hasattr(self, 'connection_status_text'):
+                    self.connection_status_text.config(text="")
+                return
+            
+            # Determine overall status and device list
+            all_connected = all(status == "connected" for status in status_dict.values())
+            any_error = any(status == "error" for status in status_dict.values())
+            any_disconnected = any(status == "disconnected" for status in status_dict.values())
+            
+            # Set indicator color and symbol
+            if any_error:
+                status_color = COLORS["error"]
+                status_symbol = "●"
+            elif all_connected:
+                status_color = COLORS["success"]
+                status_symbol = "●"
+            elif any_disconnected:
+                status_color = COLORS["warning"]
+                status_symbol = "●"
+            else:
+                status_color = COLORS["text_secondary"]
+                status_symbol = "●"
+            
+            self.connection_status_label.config(text=status_symbol, fg=status_color)
+            
+            # Build status text (device names with status)
+            if hasattr(self, 'connection_status_text'):
+                status_parts = []
+                for device_name, status in status_dict.items():
+                    if status == "connected":
+                        status_parts.append(f"{device_name} ✓")
+                    elif status == "error":
+                        status_parts.append(f"{device_name} ✗")
+                    else:
+                        status_parts.append(f"{device_name} ○")
+                
+                status_text = " | ".join(status_parts)
+                self.connection_status_text.config(text=status_text)
+            
+        except Exception as e:
+            # Don't let status update errors break the GUI
+            print(f"Error updating connection status: {e}")
 
     def update_icon(self, button: tk.Button, entry: tk.Entry, device_name: str):
         """Update device validation icon.
@@ -290,16 +359,16 @@ class GUI:
             file_size: Formatted file size string
         """
         if hasattr(self, 'rows_label'):
-            self.rows_label.config(text=f"Rows: {rows:,}")
+            self.rows_label.config(text=f"{rows:,}")
         if hasattr(self, 'file_size_label'):
-            self.file_size_label.config(text=f"File Size: {file_size}")
+            self.file_size_label.config(text=file_size)
     
     def reset_statistics(self):
         """Reset statistics display to zero."""
         if hasattr(self, 'rows_label'):
-            self.rows_label.config(text="Rows: 0")
+            self.rows_label.config(text="0")
         if hasattr(self, 'file_size_label'):
-            self.file_size_label.config(text="File Size: 0 B")
+            self.file_size_label.config(text="0 B")
 
     # Can override by another function
     def start(self):
@@ -576,7 +645,7 @@ class GUI:
 
         # Elapsed time section
         time_section = tk.Frame(content_frame, bg=COLORS["background"])
-        time_section.grid(row=1, column=0, pady=20)
+        time_section.grid(row=1, column=0, pady=30)
         
         time_label = tk.Label(
             time_section,
@@ -585,7 +654,7 @@ class GUI:
             bg=COLORS["background"],
             fg=COLORS["text_primary"]
         )
-        time_label.grid(row=0, column=0, pady=10)
+        time_label.grid(row=0, column=0, pady=(0, 15))
 
         time_display_frame = tk.Frame(time_section, bg=COLORS["background"])
         time_display_frame.grid(row=1, column=0, pady=10)
@@ -638,31 +707,70 @@ class GUI:
         )
         self.ticks.grid(row=0, column=4, padx=2)
 
-        # Statistics section (rows and file size)
-        stats_section = tk.Frame(content_frame, bg=COLORS["background"])
-        stats_section.grid(row=1, column=0, pady=15)
+        # Statistics section (rows and file size) - separate row below elapsed time
+        stats_section = tk.Frame(content_frame, bg=COLORS["surface"], relief="flat")
+        stats_section.grid(row=2, column=0, pady=20, padx=40, sticky="ew")
+        stats_section.grid_columnconfigure(0, weight=1)
+        stats_section.grid_columnconfigure(1, weight=1)
+        
+        # Statistics label
+        stats_label = tk.Label(
+            stats_section,
+            font=FONTS["heading"],
+            text="Statistics:",
+            bg=COLORS["surface"],
+            fg=COLORS["text_primary"],
+            anchor="w"
+        )
+        stats_label.grid(row=0, column=0, columnspan=2, padx=15, pady=(15, 10), sticky="w")
+        
+        # Rows display
+        rows_frame = tk.Frame(stats_section, bg=COLORS["surface"])
+        rows_frame.grid(row=1, column=0, padx=15, pady=10, sticky="w")
+        
+        rows_title = tk.Label(
+            rows_frame,
+            font=FONTS["label_small"],
+            text="Rows:",
+            bg=COLORS["surface"],
+            fg=COLORS["text_secondary"]
+        )
+        rows_title.grid(row=0, column=0, padx=(0, 5))
         
         self.rows_label = tk.Label(
-            stats_section,
-            font=FONTS["label"],
-            text="Rows: 0",
-            bg=COLORS["background"],
-            fg=COLORS["text_primary"]
+            rows_frame,
+            font=FONTS["label_medium"],
+            text="0",
+            bg=COLORS["surface"],
+            fg=COLORS["primary"]
         )
-        self.rows_label.grid(row=0, column=0, padx=20)
+        self.rows_label.grid(row=0, column=1)
+        
+        # File size display
+        size_frame = tk.Frame(stats_section, bg=COLORS["surface"])
+        size_frame.grid(row=1, column=1, padx=15, pady=10, sticky="w")
+        
+        size_title = tk.Label(
+            size_frame,
+            font=FONTS["label_small"],
+            text="File Size:",
+            bg=COLORS["surface"],
+            fg=COLORS["text_secondary"]
+        )
+        size_title.grid(row=0, column=0, padx=(0, 5))
         
         self.file_size_label = tk.Label(
-            stats_section,
-            font=FONTS["label"],
-            text="File Size: 0 B",
-            bg=COLORS["background"],
-            fg=COLORS["text_primary"]
+            size_frame,
+            font=FONTS["label_medium"],
+            text="0 B",
+            bg=COLORS["surface"],
+            fg=COLORS["primary"]
         )
-        self.file_size_label.grid(row=0, column=1, padx=20)
+        self.file_size_label.grid(row=0, column=1)
 
         # Button section - centered
         button_section = tk.Frame(content_frame, bg=COLORS["background"])
-        button_section.grid(row=2, column=0, pady=30)
+        button_section.grid(row=3, column=0, pady=30)
 
         self.start_button = self._create_modern_button(
             button_section,

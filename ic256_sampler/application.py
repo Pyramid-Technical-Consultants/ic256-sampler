@@ -168,6 +168,18 @@ class Application:
         """Callback function for logging from device setup."""
         log_message_safe(self.window, message, level)
     
+    def _connection_status_callback(self, status_dict: Dict[str, str]) -> None:
+        """Callback function for connection status updates from device manager.
+        
+        Args:
+            status_dict: Dictionary mapping device names to status strings
+        """
+        if self.window:
+            safe_gui_update(
+                self.window,
+                lambda s=status_dict: self.window.update_connection_status(s)
+            )
+    
     def _ensure_connections(self) -> None:
         """Ensure websocket connections exist for configured devices.
         
@@ -186,6 +198,8 @@ class Application:
         # Create device manager if it doesn't exist
         if self.device_manager is None:
             self.device_manager = DeviceManager()
+            # Set up connection status callback
+            self.device_manager.set_status_callback(self._connection_status_callback)
         
         # Get default sampling rate
         sampling_rate = self._get_sampling_rate()
@@ -200,18 +214,46 @@ class Application:
             
             if needs_connection:
                 # Close old connection if IP changed
-                if IC256_CONFIG.device_name in self.device_manager.connections:
-                    old_conn = self.device_manager.connections[IC256_CONFIG.device_name]
-                    try:
-                        if old_conn.thread.is_alive():
-                            old_conn.thread.join(timeout=1.0)
-                        old_conn.client.close()
-                    except Exception:
-                        pass
-                    del self.device_manager.connections[IC256_CONFIG.device_name]
+                connection_removed = False
+                with self.device_manager._lock:
+                    if IC256_CONFIG.device_name in self.device_manager.connections:
+                        old_conn = self.device_manager.connections[IC256_CONFIG.device_name]
+                        try:
+                            if old_conn.thread.is_alive():
+                                old_conn.thread.join(timeout=1.0)
+                            old_conn.client.close()
+                        except Exception:
+                            pass
+                        del self.device_manager.connections[IC256_CONFIG.device_name]
+                        connection_removed = True
+                
+                # Notify status change after removing connection (outside lock)
+                if connection_removed:
+                    self.device_manager._notify_status_change()
                 
                 # Create new connection (but don't start collection yet)
                 self.device_manager.add_device(IC256_CONFIG, ic256_ip, sampling_rate, self._log_callback)
+        else:
+            # IC256 IP is empty - close and remove IC256 connection if it exists
+            connection_removed = False
+            with self.device_manager._lock:
+                if IC256_CONFIG.device_name in self.device_manager.connections:
+                    old_conn = self.device_manager.connections[IC256_CONFIG.device_name]
+                    try:
+                        # Stop any active collection threads
+                        if old_conn.thread.is_alive():
+                            old_conn.thread.join(timeout=1.0)
+                        # Close the websocket connection
+                        old_conn.client.close()
+                    except Exception:
+                        pass
+                    # Remove the connection
+                    del self.device_manager.connections[IC256_CONFIG.device_name]
+                    connection_removed = True
+            
+            # Notify status change after removing connection (outside lock)
+            if connection_removed:
+                self.device_manager._notify_status_change()
         
         # Check and update TX2 connection
         if tx2_ip:
@@ -223,18 +265,46 @@ class Application:
             
             if needs_connection:
                 # Close old connection if IP changed
-                if TX2_CONFIG.device_name in self.device_manager.connections:
-                    old_conn = self.device_manager.connections[TX2_CONFIG.device_name]
-                    try:
-                        if old_conn.thread.is_alive():
-                            old_conn.thread.join(timeout=1.0)
-                        old_conn.client.close()
-                    except Exception:
-                        pass
-                    del self.device_manager.connections[TX2_CONFIG.device_name]
+                connection_removed = False
+                with self.device_manager._lock:
+                    if TX2_CONFIG.device_name in self.device_manager.connections:
+                        old_conn = self.device_manager.connections[TX2_CONFIG.device_name]
+                        try:
+                            if old_conn.thread.is_alive():
+                                old_conn.thread.join(timeout=1.0)
+                            old_conn.client.close()
+                        except Exception:
+                            pass
+                        del self.device_manager.connections[TX2_CONFIG.device_name]
+                        connection_removed = True
+                
+                # Notify status change after removing connection (outside lock)
+                if connection_removed:
+                    self.device_manager._notify_status_change()
                 
                 # Create new connection (but don't start collection yet)
                 self.device_manager.add_device(TX2_CONFIG, tx2_ip, sampling_rate, self._log_callback)
+        else:
+            # TX2 IP is empty - close and remove TX2 connection if it exists
+            connection_removed = False
+            with self.device_manager._lock:
+                if TX2_CONFIG.device_name in self.device_manager.connections:
+                    old_conn = self.device_manager.connections[TX2_CONFIG.device_name]
+                    try:
+                        # Stop any active collection threads
+                        if old_conn.thread.is_alive():
+                            old_conn.thread.join(timeout=1.0)
+                        # Close the websocket connection
+                        old_conn.client.close()
+                    except Exception:
+                        pass
+                    # Remove the connection
+                    del self.device_manager.connections[TX2_CONFIG.device_name]
+                    connection_removed = True
+            
+            # Notify status change after removing connection (outside lock)
+            if connection_removed:
+                self.device_manager._notify_status_change()
     
     def _update_elapse_time(self) -> None:
         """Update elapsed time display in GUI."""
@@ -382,8 +452,13 @@ class Application:
 
         # Check if any devices were found
         if len(devices_added) == 0:
-            show_message_safe(self.window, "No device found. Please try again.", "red")
+            error_msg = "No devices available for data collection. Please configure at least one device and ensure connections are established."
+            show_message_safe(self.window, error_msg, "red")
             log_message_safe(self.window, "Data collection start failed: No valid devices found", "ERROR")
+            log_message_safe(self.window, f"IC256 IP: {ic256_ip}, TX2 IP: {tx2_ip}", "INFO")
+            with device_manager._lock:
+                available_connections = list(device_manager.connections.keys())
+            log_message_safe(self.window, f"Available connections: {available_connections}", "INFO")
             set_button_state_safe(self.window, "start_button", "normal")
             return
 
@@ -455,9 +530,10 @@ class Application:
             return
         
         try:
-            ic256_ip, _, _, _ = self._get_gui_values()
-            if not ic256_ip:
-                show_message_safe(self.window, "IC256 IP address is required.", "red")
+            ic256_ip, tx2_ip, _, _ = self._get_gui_values()
+            # Check if at least one device IP is provided
+            if not ic256_ip and not tx2_ip:
+                show_message_safe(self.window, "At least one device IP address (IC256 or TX2) is required.", "red")
                 set_button_state_safe(self.window, "start_button", "normal")
                 return
 
@@ -474,6 +550,8 @@ class Application:
             error_msg = f"Error starting collection: {str(e)}"
             show_message_safe(self.window, error_msg, "red")
             log_message_safe(self.window, error_msg, "ERROR")
+            import traceback
+            traceback.print_exc()
             set_button_state_safe(self.window, "start_button", "normal")
     
     def start_collection(self) -> None:

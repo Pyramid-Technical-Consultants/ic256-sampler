@@ -81,6 +81,7 @@ class DeviceManager:
         self.stop_event = threading.Event()
         self._lock = threading.Lock()
         self._running = False
+        self._status_callback: Optional[Callable[[Dict[str, str]], None]] = None  # Callback for status updates
     
     def add_device(
         self,
@@ -169,10 +170,6 @@ class DeviceManager:
             )
             keepalive_thread.start()  # Start immediately to keep connection active
             
-            # Set initial connection status
-            with self._lock:
-                connection = None  # Will be created below
-            
             # Create data collection thread for this device (only active during collection)
             thread = threading.Thread(
                 target=self._collect_from_device,
@@ -194,9 +191,15 @@ class DeviceManager:
                 keepalive_thread=keepalive_thread,
             )
             
+            # Set initial connection status
+            with connection._status_lock:
+                connection._connection_status = "connected"  # Assume connected if we got this far
+            
             # Store connection
             with self._lock:
                 self.connections[config.device_name] = connection
+                # Notify status change
+                self._notify_status_change()
             
             if log_callback:
                 log_callback(f"{config.device_name} device connection created: {ip_address}", "INFO")
@@ -301,6 +304,7 @@ class DeviceManager:
         client: IGXWebsocketClient,
         channels: Dict[str, Any],
         field_to_path: Dict[str, str],
+        device_name: str,
     ) -> None:
         """Keep-alive message loop that runs continuously to keep the connection active.
         
@@ -308,15 +312,39 @@ class DeviceManager:
         - Continuously calls updateSubscribedFields() to process incoming messages
         - Keeps the websocket connection alive and exercised
         - Processes messages even when not collecting (data is ignored outside collection)
+        - Updates connection status based on websocket health
         
         Args:
             client: The websocket client
             channels: Dictionary of channel fields
             field_to_path: Dictionary mapping field names to channel paths
+            device_name: Name of the device for status tracking
         """
         try:
             while True:  # Run indefinitely to keep connection alive
                 try:
+                    # Check connection status
+                    is_connected = (
+                        client.ws != "" and 
+                        hasattr(client.ws, 'connected') and 
+                        client.ws.connected
+                    )
+                    
+                    # Update connection status
+                    status_changed = False
+                    with self._lock:
+                        if device_name in self.connections:
+                            conn = self.connections[device_name]
+                            with conn._status_lock:
+                                old_status = conn._connection_status
+                                conn._connection_status = "connected" if is_connected else "disconnected"
+                                if old_status != conn._connection_status:
+                                    status_changed = True
+                    
+                    # Notify outside the lock to avoid potential deadlock
+                    if status_changed:
+                        self._notify_status_change()
+                    
                     # Update subscribed fields - this processes incoming messages
                     # and keeps the connection active by sending "get" events and receiving responses
                     # This exercises the connection even when not collecting
@@ -326,8 +354,21 @@ class DeviceManager:
                     time.sleep(0.001)
                     
                 except (ConnectionAbortedError, ConnectionResetError, OSError) as e:
-                    # Connection errors - the connection may have been closed
-                    # Exit the keep-alive thread (connection will be recreated if needed)
+                    # Connection errors - update status and exit
+                    status_changed = False
+                    with self._lock:
+                        if device_name in self.connections:
+                            conn = self.connections[device_name]
+                            with conn._status_lock:
+                                old_status = conn._connection_status
+                                conn._connection_status = "error"
+                                if old_status != "error":
+                                    status_changed = True
+                    
+                    # Notify outside the lock to avoid potential deadlock
+                    if status_changed:
+                        self._notify_status_change()
+                    
                     print(f"Connection error in keep-alive message loop: {e}")
                     break
                 except Exception as e:
@@ -339,6 +380,38 @@ class DeviceManager:
             print(f"Fatal error in keep-alive message loop: {e}")
             import traceback
             traceback.print_exc()
+    
+    def _notify_status_change(self) -> None:
+        """Notify status callback of connection status changes."""
+        if self._status_callback:
+            try:
+                status_dict = self.get_connection_status()
+                self._status_callback(status_dict)
+            except Exception:
+                pass  # Don't let callback errors break the system
+    
+    def set_status_callback(self, callback: Optional[Callable[[Dict[str, str]], None]]) -> None:
+        """Set callback function for connection status updates.
+        
+        Args:
+            callback: Function that takes a Dict[str, str] mapping device names to status
+                     ("connected", "disconnected", "error")
+        """
+        with self._lock:
+            self._status_callback = callback
+    
+    def get_connection_status(self) -> Dict[str, str]:
+        """Get connection status for all devices.
+        
+        Returns:
+            Dictionary mapping device names to their connection status
+            ("connected", "disconnected", "error")
+        """
+        with self._lock:
+            return {
+                name: conn._connection_status
+                for name, conn in self.connections.items()
+            }
     
     def _collect_from_device(
         self,
