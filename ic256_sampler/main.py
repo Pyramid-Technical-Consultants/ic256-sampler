@@ -38,7 +38,6 @@ except portalocker.LockException:
     sys.exit(1)
 
 
-# Re-export Application for backward compatibility
 __all__ = ['Application', 'main']
 
 

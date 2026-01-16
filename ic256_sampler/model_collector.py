@@ -145,11 +145,6 @@ class ModelCollector:
         if self.csv_writer.rows_written % 5000 == 0:
             self.csv_writer.sync()
         
-        # STEP 5: Pruning disabled for performance
-        # Memory usage: 6 kHz * 6 min = 2.16M rows * ~150 bytes/row = ~325 MB
-        # IODatabase: ~1.3 GB for 15 channels
-        # Total: ~1.6 GB - acceptable for modern systems
-        # Pruning adds overhead and complexity without significant benefit
     
     def stop(self) -> None:
         """Stop data collection (but continue processing existing data).

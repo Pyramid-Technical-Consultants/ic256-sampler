@@ -1189,4 +1189,18 @@ class GUI:
         self.render_log_tab()
         self.render_date_time()
         self.root.update_idletasks()
+        
+        # Set up window close handler if not already set
+        # This allows the application to clean up properly when the window is closed
+        if hasattr(self, '_close_handler_set') and self._close_handler_set:
+            pass  # Already set
+        else:
+            # Store reference to cleanup function if it exists
+            if hasattr(self, 'on_close'):
+                self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+            else:
+                # Default: just destroy the window
+                self.root.protocol("WM_DELETE_WINDOW", self.root.quit)
+            self._close_handler_set = True
+        
         self.root.mainloop()

@@ -44,7 +44,6 @@ class DeviceConnection:
         ip_address: str,
         client: IGXWebsocketClient,
         channels: Dict[str, Any],
-        env_channels: Optional[Dict[str, Any]],
         model: Any,
         field_to_path: Dict[str, str],
         thread: threading.Thread,
@@ -54,11 +53,10 @@ class DeviceConnection:
         self.ip_address = ip_address
         self.client = client
         self.channels = channels
-        self.env_channels = env_channels
         self.model = model
         self.field_to_path = field_to_path
-        self.thread = thread  # Data collection thread (only active during collection)
-        self.keepalive_thread = keepalive_thread  # Keep-alive message loop thread (always active)
+        self.thread = thread
+        self.keepalive_thread = keepalive_thread
         self.statistics: Dict[str, Any] = {"rows": 0, "file_size": 0}
         self._connection_status = "disconnected"  # "connected", "disconnected", "error"
         self._status_lock = threading.Lock()  # Lock for thread-safe status updates
@@ -104,7 +102,6 @@ class DeviceManager:
         if not ip_address:
             return False
         
-        # Validate device
         if not is_valid_device(ip_address, config.device_type):
             if log_callback:
                 log_callback(
@@ -114,20 +111,16 @@ class DeviceManager:
             return False
         
         try:
-            # Check if we already have a connection for this device
             with self._lock:
                 if config.device_name in self.connections:
                     existing_conn = self.connections[config.device_name]
                     if existing_conn.ip_address == ip_address:
-                        # Connection already exists and IP matches - reuse it
-                        # Update sampling rate if needed
                         existing_conn.model.setup_device(existing_conn.client, sampling_rate)
                         
                         if log_callback:
                             log_callback(f"Reusing existing connection for {config.device_name} at {ip_address}", "INFO")
                         return True
                     else:
-                        # IP changed - close old connection and create new one
                         try:
                             if existing_conn.thread.is_alive():
                                 existing_conn.thread.join(timeout=1.0)
@@ -136,41 +129,40 @@ class DeviceManager:
                             pass
                         del self.connections[config.device_name]
             
-            # Create new connection
             if log_callback:
                 log_callback(f"Connecting to {config.device_name} device at {ip_address}", "INFO")
             
-            # Create client and channels
             client = IGXWebsocketClient(ip_address)
             channels = config.channel_creator(client)
             
-            # Create model and set up device
             model = config.model_creator()
             if model is None:
                 raise ValueError(f"No model creator for device type: {config.device_type}")
             
-            # Set up device using model
             model.setup_device(client, sampling_rate)
-            
-            # Get field mapping from model
             field_to_path = model.get_field_to_path_mapping()
             
-            # Subscribe to channels immediately to prime the connection
             client.sendSubscribeFields({
                 field: True for field in channels.values()
             })
-            client.updateSubscribedFields()
             
-            # Create keep-alive message loop thread (runs continuously to keep connection active)
+            connection_working = False
+            try:
+                client.updateSubscribedFields()
+                connection_working = True
+            except Exception as e:
+                connection_working = False
+                if log_callback:
+                    log_callback(f"Connection test failed for {config.device_name}: {e}", "WARNING")
+            
             keepalive_thread = threading.Thread(
                 target=self._keepalive_message_loop,
                 name=f"{config.device_type.lower()}_keepalive_{ip_address}",
                 daemon=True,
                 args=(client, channels, field_to_path, config.device_name),
             )
-            keepalive_thread.start()  # Start immediately to keep connection active
+            keepalive_thread.start()
             
-            # Create data collection thread for this device (only active during collection)
             thread = threading.Thread(
                 target=self._collect_from_device,
                 name=f"{config.device_type.lower()}_device_{ip_address}",
@@ -178,28 +170,25 @@ class DeviceManager:
                 args=(config, client, channels, model, field_to_path, ip_address),
             )
             
-            # Create connection object
             connection = DeviceConnection(
                 config=config,
                 ip_address=ip_address,
                 client=client,
                 channels=channels,
-                env_channels=None,  # No longer used, kept for backward compatibility
                 model=model,
                 field_to_path=field_to_path,
                 thread=thread,
                 keepalive_thread=keepalive_thread,
             )
             
-            # Set initial connection status
+            initial_status = "connected" if connection_working else "disconnected"
             with connection._status_lock:
-                connection._connection_status = "connected"  # Assume connected if we got this far
+                connection._connection_status = initial_status
             
-            # Store connection
             with self._lock:
                 self.connections[config.device_name] = connection
-                # Notify status change
-                self._notify_status_change()
+            
+            self._notify_status_change()
             
             if log_callback:
                 log_callback(f"{config.device_name} device connection created: {ip_address}", "INFO")
@@ -253,24 +242,27 @@ class DeviceManager:
         This should be called when:
         - IP addresses change
         - Application is shutting down
+        
+        This method stops all threads (including keep-alive threads) and closes connections.
         """
         with self._lock:
-            # Stop collection first
             if self._running:
                 self._running = False
                 self.stop_event.set()
                 
-                # Wait for threads to finish
                 for connection in self.connections.values():
                     if connection.thread.is_alive():
                         connection.thread.join(timeout=1.0)
             
-            # Close all connections
             for connection in self.connections.values():
                 try:
                     connection.client.close()
                 except Exception:
                     pass
+            
+            for connection in list(self.connections.values()):
+                if connection.keepalive_thread and connection.keepalive_thread.is_alive():
+                    connection.keepalive_thread.join(timeout=0.5)
             
             self.connections.clear()
     
@@ -321,16 +313,34 @@ class DeviceManager:
             device_name: Name of the device for status tracking
         """
         try:
-            while True:  # Run indefinitely to keep connection alive
+            while True:
+                with self._lock:
+                    if device_name not in self.connections:
+                        break
+                    conn = self.connections.get(device_name)
+                    if not conn or conn.client.ws == "":
+                        break
+                
                 try:
-                    # Check connection status
-                    is_connected = (
-                        client.ws != "" and 
-                        hasattr(client.ws, 'connected') and 
-                        client.ws.connected
-                    )
+                    is_connected = False
+                    try:
+                        if client.ws != "":
+                            client.updateSubscribedFields()
+                            is_connected = True
+                        else:
+                            is_connected = False
+                    except (ConnectionAbortedError, ConnectionResetError, OSError):
+                        is_connected = False
+                        break
+                    except Exception as e:
+                        error_str = str(e).lower()
+                        error_type = type(e).__name__.lower()
+                        if any(keyword in error_str or keyword in error_type for keyword in ['connection', 'socket', 'network', 'timeout', 'broken', 'closed', 'abort', 'reset']):
+                            is_connected = False
+                            break
+                        else:
+                            is_connected = True
                     
-                    # Update connection status
                     status_changed = False
                     with self._lock:
                         if device_name in self.connections:
@@ -341,20 +351,12 @@ class DeviceManager:
                                 if old_status != conn._connection_status:
                                     status_changed = True
                     
-                    # Notify outside the lock to avoid potential deadlock
                     if status_changed:
                         self._notify_status_change()
                     
-                    # Update subscribed fields - this processes incoming messages
-                    # and keeps the connection active by sending "get" events and receiving responses
-                    # This exercises the connection even when not collecting
-                    client.updateSubscribedFields()
-                    
-                    # Small sleep to prevent tight loop
                     time.sleep(0.001)
                     
                 except (ConnectionAbortedError, ConnectionResetError, OSError) as e:
-                    # Connection errors - update status and exit
                     status_changed = False
                     with self._lock:
                         if device_name in self.connections:
@@ -365,16 +367,14 @@ class DeviceManager:
                                 if old_status != "error":
                                     status_changed = True
                     
-                    # Notify outside the lock to avoid potential deadlock
                     if status_changed:
                         self._notify_status_change()
                     
                     print(f"Connection error in keep-alive message loop: {e}")
                     break
                 except Exception as e:
-                    # Other errors - log but continue to keep trying
                     print(f"Error in keep-alive message loop: {e}")
-                    time.sleep(0.1)  # Longer sleep on error to avoid tight error loop
+                    time.sleep(0.1)
                     
         except Exception as e:
             print(f"Fatal error in keep-alive message loop: {e}")
@@ -382,13 +382,20 @@ class DeviceManager:
             traceback.print_exc()
     
     def _notify_status_change(self) -> None:
-        """Notify status callback of connection status changes."""
+        """Notify status callback of connection status changes.
+        
+        This method is safe to call from any thread and does not hold locks.
+        It should NOT be called while holding self._lock to avoid deadlocks.
+        """
+        if not hasattr(self, '_status_callback'):
+            return
+        
         if self._status_callback:
             try:
                 status_dict = self.get_connection_status()
                 self._status_callback(status_dict)
-            except Exception:
-                pass  # Don't let callback errors break the system
+            except Exception as e:
+                print(f"Error in status callback: {e}")
     
     def set_status_callback(self, callback: Optional[Callable[[Dict[str, str]], None]]) -> None:
         """Set callback function for connection status updates.
@@ -431,24 +438,16 @@ class DeviceManager:
         first_timestamp: Optional[int] = None
         
         try:
-            # Main collection loop (keep-alive thread handles message processing)
             while not self.stop_event.is_set():
-                # Collect all data from this device (all channels, including environmental)
                 first_timestamp = self._collect_all_channel_data(
                     channels, field_to_path, first_timestamp
                 )
-                
-                # Small sleep to prevent tight loop
                 time.sleep(0.001)
                 
         except Exception as e:
             print(f"Error collecting data from {config.device_name} at {ip_address}: {e}")
             import traceback
             traceback.print_exc()
-        # Note: We do NOT close the client here - it's kept alive for reuse
-        # The client will only be closed when:
-        # - IP address changes (via close_all_connections)
-        # - Application shuts down (via close_all_connections)
     
     def _collect_all_channel_data(
         self,
@@ -468,32 +467,24 @@ class DeviceManager:
         """
         updated_first_timestamp = first_timestamp
         
-        # Process each channel - each may have data or not (partial updates are normal)
         for field_name, channel in channels.items():
             try:
-                # Get array of arrays: [[value, timestamp], [value, timestamp], ...]
                 data = channel.getDatums()
                 
                 if not data:
-                    continue  # No data for this channel in this update - normal
+                    continue
                 
-                # Get channel path from field name mapping
                 channel_path = field_to_path.get(field_name)
                 if not channel_path:
-                    # Fallback: try to get path from field object
                     try:
                         channel_path = channel.getPath()
                     except (AttributeError, TypeError):
-                        # Last resort: use field name
                         channel_path = field_name
                 
-                # Ensure channel exists in database
                 with self._lock:
                     if channel_path not in self.io_database.get_all_channels():
                         self.io_database.add_channel(channel_path)
                 
-                # Batch process all data points to reduce lock contention
-                # Collect all points first, then add them in a single lock acquisition
                 points_to_add = []
                 
                 for data_point in data:
@@ -503,12 +494,11 @@ class DeviceManager:
                     value = data_point[0]
                     ts_raw = data_point[1]
                     
-                    # Convert timestamp to nanoseconds
                     try:
                         if isinstance(ts_raw, float):
-                            if ts_raw < 1e12:  # Likely seconds
+                            if ts_raw < 1e12:
                                 ts_ns = int(ts_raw * 1e9)
-                            else:  # Already in nanoseconds
+                            else:
                                 ts_ns = int(ts_raw)
                         elif isinstance(ts_raw, int):
                             ts_ns = ts_raw
@@ -517,13 +507,11 @@ class DeviceManager:
                     except (ValueError, TypeError, OverflowError):
                         continue
                     
-                    # Track first timestamp
                     if updated_first_timestamp is None:
                         updated_first_timestamp = ts_ns
                     
                     points_to_add.append((channel_path, value, ts_ns))
                 
-                # Add all points in a single lock acquisition (much faster)
                 if points_to_add:
                     with self._lock:
                         for ch_path, val, ts in points_to_add:
@@ -536,7 +524,6 @@ class DeviceManager:
         return updated_first_timestamp
 
 
-# Device configuration creators (for backward compatibility)
 def create_ic256_channels(client: IGXWebsocketClient) -> Dict[str, Any]:
     """Create channel dictionary for IC256 device (including environmental channels)."""
     from .device_paths import IC256_45_PATHS
@@ -548,28 +535,10 @@ def create_ic256_channels(client: IGXWebsocketClient) -> Dict[str, Any]:
         "primary_channel": client.field(IC256_45_PATHS["adc"]["primary_dose"]),
         "channel_sum": client.field(IC256_45_PATHS["adc"]["channel_sum"]),
         "external_trigger": client.field(IC256_45_PATHS["adc"]["gate_signal"]),
-        # Environmental sensor channels (treated same as any other channel)
         "temperature": client.field(IC256_45_PATHS["environmental_sensor"]["temperature"]),
         "humidity": client.field(IC256_45_PATHS["environmental_sensor"]["humidity"]),
         "pressure": client.field(IC256_45_PATHS["environmental_sensor"]["pressure"]),
         "env_connected": client.field(IC256_45_PATHS["environmental_sensor"]["state"]),
-    }
-
-
-# create_ic256_env_channels is deprecated - environmental channels are now included in create_ic256_channels
-# Keeping this function for backward compatibility but it's no longer used
-def create_ic256_env_channels(client: IGXWebsocketClient) -> Dict[str, Any]:
-    """Create environment channel dictionary for IC256 device.
-    
-    DEPRECATED: Environmental channels are now included in create_ic256_channels().
-    This function is kept for backward compatibility but should not be used.
-    """
-    from .device_paths import IC256_45_PATHS
-    return {
-        "temperature": client.field(IC256_45_PATHS["environmental_sensor"]["temperature"]),
-        "humidity": client.field(IC256_45_PATHS["environmental_sensor"]["humidity"]),
-        "pressure": client.field(IC256_45_PATHS["environmental_sensor"]["pressure"]),
-        "connected": client.field(IC256_45_PATHS["environmental_sensor"]["state"]),
     }
 
 

@@ -801,6 +801,24 @@ class Application:
             self.window.start = self.start_collection
             self.window.stop = self.stop_collection
             self.window.set_up_device = self.setup_devices
+            
+            # Set up window close handler to call cleanup
+            def on_window_close():
+                """Handle window close event."""
+                try:
+                    # Clean up resources
+                    self.cleanup()
+                    # Destroy the window
+                    if self.window and self.window.root:
+                        self.window.root.quit()
+                        self.window.root.destroy()
+                except Exception as e:
+                    # Force exit if cleanup fails
+                    print(f"Error during window close: {e}")
+                    import sys
+                    sys.exit(0)
+            
+            self.window.on_close = on_window_close
 
             # Start the GUI (this blocks until window is closed)
             # Connections will be created when needed (when starting collection or when IPs change)
