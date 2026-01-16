@@ -90,6 +90,7 @@ def setup_device_thread(
     save_folder: str,
     stop_event: threading.Event,
     log_callback: Optional[Callable[[str, str], None]] = None,
+    statistics: Optional[Dict[str, Any]] = None,
 ) -> Optional[threading.Thread]:
     """Set up a device and create data collection thread.
     
@@ -143,6 +144,7 @@ def setup_device_thread(
                 save_folder,
                 stop_event,
                 sampling_rate,
+                statistics,
             ),
         )
         

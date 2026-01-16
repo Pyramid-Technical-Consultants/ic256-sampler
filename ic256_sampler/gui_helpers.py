@@ -1,6 +1,6 @@
 """GUI helper utilities for thread-safe updates and common operations."""
 
-from typing import Optional, Callable
+from typing import Optional, Callable, Any
 from .gui import GUI
 
 

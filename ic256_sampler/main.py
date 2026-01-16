@@ -9,7 +9,7 @@ import portalocker
 import threading
 import time
 import atexit
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Any
 import tempfile
 import requests
 from .gui import GUI
@@ -74,6 +74,7 @@ class Application:
         self.window: Optional[GUI] = None
         self.stop_event = threading.Event()
         self.device_threads: Dict[str, threading.Thread] = {}
+        self.device_statistics: Dict[str, Dict[str, Any]] = {}  # device_name -> {rows, file_size, file_path}
     
     def _get_gui_values(self) -> Tuple[str, str, str, str]:
         """Get values from GUI entries.
@@ -131,6 +132,28 @@ class Application:
             )
             time.sleep(TIME_UPDATE_INTERVAL)
     
+    def _update_statistics(self) -> None:
+        """Update statistics display (rows and file size) in GUI."""
+        while not self.stop_event.is_set():
+            if self.window and self.device_statistics:
+                # Aggregate statistics across all devices
+                total_rows = sum(stats.get("rows", 0) for stats in self.device_statistics.values())
+                total_size = sum(stats.get("file_size", 0) for stats in self.device_statistics.values())
+                
+                # Format file size
+                if total_size < 1024:
+                    size_str = f"{total_size} B"
+                elif total_size < 1024 * 1024:
+                    size_str = f"{total_size / 1024:.1f} KB"
+                else:
+                    size_str = f"{total_size / (1024 * 1024):.1f} MB"
+                
+                safe_gui_update(
+                    self.window,
+                    lambda r=total_rows, s=size_str: self.window.update_statistics(r, s)
+                )
+            time.sleep(TIME_UPDATE_INTERVAL)
+    
     def _device_thread(self) -> None:
         """Main device thread that sets up and starts data collection."""
         if not self.window:
@@ -138,6 +161,7 @@ class Application:
         
         self.stop_event.clear()
         safe_gui_update(self.window, self.window.reset_elapse_time)
+        safe_gui_update(self.window, self.window.reset_statistics)
         set_button_state_safe(self.window, "start_button", "disabled")
 
         # Get timestamp and configuration
@@ -145,10 +169,12 @@ class Application:
         sampling_rate = self._get_sampling_rate()
         ic256_ip, tx2_ip, note, save_folder = self._get_gui_values()
 
-        # Initialize device threads dictionary
+        # Initialize device threads dictionary and statistics
         self.device_threads = {}
+        self.device_statistics = {}
 
         # Set up IC256 device
+        ic256_stats: Dict[str, Any] = {}
         ic256_thread = setup_device_thread(
             IC256_CONFIG,
             ic256_ip,
@@ -159,11 +185,14 @@ class Application:
             save_folder,
             self.stop_event,
             self._log_callback,
+            ic256_stats,
         )
         if ic256_thread:
             self.device_threads[IC256_CONFIG.device_name] = ic256_thread
+            self.device_statistics[IC256_CONFIG.device_name] = ic256_stats
 
         # Set up TX2 device (optional)
+        tx2_stats: Dict[str, Any] = {}
         tx2_thread = setup_device_thread(
             TX2_CONFIG,
             tx2_ip,
@@ -174,9 +203,11 @@ class Application:
             save_folder,
             self.stop_event,
             self._log_callback,
+            tx2_stats,
         )
         if tx2_thread:
             self.device_threads[TX2_CONFIG.device_name] = tx2_thread
+            self.device_statistics[TX2_CONFIG.device_name] = tx2_stats
 
         # Check if any devices were found
         if len(self.device_threads) == 0:
@@ -201,6 +232,14 @@ class Application:
             daemon=True
         )
         time_thread.start()
+        
+        # Start statistics update thread
+        stats_thread = threading.Thread(
+            target=self._update_statistics,
+            name="statistics_update",
+            daemon=True
+        )
+        stats_thread.start()
         
         for device_name, thread in self.device_threads.items():
             thread.start()

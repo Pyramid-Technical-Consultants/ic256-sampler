@@ -281,6 +281,25 @@ class GUI:
         self.minute.config(text="00")
         self.second.config(text="00")
         self.ticks.config(text="000")
+    
+    def update_statistics(self, rows: int, file_size: str):
+        """Update statistics display (rows and file size).
+        
+        Args:
+            rows: Total number of rows captured
+            file_size: Formatted file size string
+        """
+        if hasattr(self, 'rows_label'):
+            self.rows_label.config(text=f"Rows: {rows:,}")
+        if hasattr(self, 'file_size_label'):
+            self.file_size_label.config(text=f"File Size: {file_size}")
+    
+    def reset_statistics(self):
+        """Reset statistics display to zero."""
+        if hasattr(self, 'rows_label'):
+            self.rows_label.config(text="Rows: 0")
+        if hasattr(self, 'file_size_label'):
+            self.file_size_label.config(text="File Size: 0 B")
 
     # Can override by another function
     def start(self):
@@ -596,6 +615,28 @@ class GUI:
             width=4
         )
         self.ticks.grid(row=0, column=4, padx=2)
+
+        # Statistics section (rows and file size)
+        stats_section = tk.Frame(content_frame, bg=COLORS["background"])
+        stats_section.grid(row=1, column=0, pady=15)
+        
+        self.rows_label = tk.Label(
+            stats_section,
+            font=FONTS["label"],
+            text="Rows: 0",
+            bg=COLORS["background"],
+            fg=COLORS["text_primary"]
+        )
+        self.rows_label.grid(row=0, column=0, padx=20)
+        
+        self.file_size_label = tk.Label(
+            stats_section,
+            font=FONTS["label"],
+            text="File Size: 0 B",
+            bg=COLORS["background"],
+            fg=COLORS["text_primary"]
+        )
+        self.file_size_label.grid(row=0, column=1, padx=20)
 
         # Button section - centered
         button_section = tk.Frame(content_frame, bg=COLORS["background"])
