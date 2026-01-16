@@ -1361,10 +1361,13 @@ class VirtualDatabase:
             self.build()  # build() will check for priming
             return
         
-        # Check if all channels are primed (have at least one data point)
-        # This is important for incremental rebuilds - we may have started before all channels had data
-        if not self._is_primed():
-            return  # Not all channels have data yet, wait for priming
+        # NOTE: We do NOT check priming again after initial build.
+        # Once the initial build is complete, we continue with incremental rebuilds
+        # even if some channels temporarily have no data. The initial build already
+        # verified that all channels were primed, and incremental rebuilds should
+        # continue building rows from the reference channel data.
+        # The previous priming check here was causing rebuilds to stop if any channel
+        # temporarily had no data, which prevented new rows from being created.
         
         # If no new data, skip (with small tolerance for floating point)
         if last_elapsed <= self._last_built_time + 1e-9:

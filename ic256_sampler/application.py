@@ -421,7 +421,13 @@ class Application:
         
         # Use the persistent device manager
         device_manager = self.device_manager
+        
+        # CRITICAL: Set stop_event BEFORE calling stop() so stop() uses the correct event
         device_manager.stop_event = self.stop_event
+        
+        # CRITICAL: Stop any previous acquisition to reset _running state
+        # This ensures start() will actually start the threads
+        device_manager.stop()
         
         # Clear the database for new acquisition
         device_manager.clear_database()
@@ -440,6 +446,12 @@ class Application:
                 connection = device_manager.connections[device_name]
                 # Update sampling rate
                 connection.model.setup_device(connection.client, sampling_rate)
+                
+                # Ensure old thread is stopped before creating new one
+                if connection.thread.is_alive():
+                    # Old thread is still running - wait for it to stop
+                    connection.thread.join(timeout=1.0)
+                
                 # Create new data collection thread for this acquisition
                 config = connection.config
                 thread = threading.Thread(

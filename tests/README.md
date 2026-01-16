@@ -8,6 +8,7 @@ This directory contains the unit test suite for IC256 Sampler.
 - **`test_device_paths.py`** - Tests for device path configuration and helper functions
 - **`test_ic256_model.py`** - Tests for IC256Model conversion functions and column definitions
 - **`test_config.py`** - Tests for configuration management (loading, saving, validation)
+- **`test_device_manager.py`** - **NEW**: Unit and integration tests for DeviceManager data collection
 - **`test_integration.py`** - Integration tests that require live device connections (optional)
 - **`conftest.py`** - Pytest configuration and shared fixtures
 
@@ -80,6 +81,16 @@ Current test coverage includes:
 - ✅ Sigma value conversion (X/Y axis, invalid values)
 - ✅ IC256Model converter methods
 - ✅ Column definition creation
+
+### Device Manager Module (`test_device_manager.py`)
+- ✅ DeviceManager initialization and configuration
+- ✅ Device connection creation and management
+- ✅ **Critical: Data collection thread calls `updateSubscribedFields()`** (prevents regression)
+- ✅ Data collection from channels into IODatabase
+- ✅ Handling of empty datums, invalid timestamps, multiple channels
+- ✅ Thread coordination (start/stop/idempotent operations)
+- ✅ Integration tests with mocked websocket clients
+- ✅ Integration tests with real devices (requires live device)
 - ✅ Gaussian value processing
 - ✅ CSV header generation (IC256, TX2, unknown devices)
 - ✅ Time binning function
@@ -135,13 +146,28 @@ pytest -v
 pytest -m "not integration" -v
 ```
 
+## Key Test Coverage
+
+### Critical Regression Tests
+
+The following tests are particularly important for preventing regressions:
+
+1. **`test_device_manager.py::test_collect_from_device_calls_update_subscribed_fields`**
+   - **Purpose**: Ensures the data collection thread calls `updateSubscribedFields()`
+   - **Why Critical**: This bug caused complete data collection failure (only 1 row collected instead of thousands)
+   - **Prevents**: Regression where collection thread doesn't process websocket messages
+
+2. **`test_integration.py::test_ic256_sampling_rate_3000hz`**
+   - **Purpose**: End-to-end verification of data collection at expected rates
+   - **Why Critical**: Catches issues in the full data collection pipeline
+   - **Prevents**: Data collection rate problems, missing data, processing failures
+
 ## Future Test Additions
 
 Areas that could benefit from additional tests:
 - GUI components (requires GUI testing framework)
-- WebSocket client (requires mocking websocket connections)
-- Main application flow (integration tests)
-- Data collection end-to-end (requires device mocking or live devices)
+- WebSocket client error handling and reconnection scenarios
+- Main application flow end-to-end (full user workflows)
 
 ## Continuous Integration
 

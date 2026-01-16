@@ -548,3 +548,292 @@ class TestApplication:
             assert app.stop_event.is_set() == False, "stop_event should be cleared for third acquisition"
             assert app.collector is not None, "collector should be created for third acquisition"
             assert app.collector_thread is not None, "collector_thread should be created for third acquisition"
+
+    def test_device_manager_stop_called_before_new_acquisition(self):
+        """CRITICAL REGRESSION TEST: Verify device_manager.stop() is called before starting new acquisition.
+        
+        This test prevents the regression where data collection stops after one row because
+        device_manager._running was still True from a previous acquisition, causing start() to return early.
+        """
+        app = Application()
+        mock_window = Mock()
+        mock_window.ix256_a_entry = Mock()
+        mock_window.ix256_a_entry.get = Mock(return_value="192.168.1.100")
+        mock_window.tx2_entry = Mock()
+        mock_window.tx2_entry.get = Mock(return_value="")
+        mock_window.note_entry = Mock()
+        mock_window.note_entry.get = Mock(return_value="Test Note")
+        mock_window.path_entry = Mock()
+        mock_window.path_entry.get = Mock(return_value="/test/path")
+        mock_window.sampling_entry = Mock()
+        mock_window.sampling_entry.get = Mock(return_value="500")
+        mock_window.root = Mock()
+        mock_window.root.after = Mock()
+        mock_window.reset_elapse_time = Mock()
+        mock_window.reset_statistics = Mock()
+        app.window = mock_window
+        
+        # Setup device manager with a connection
+        app.device_manager = DeviceManager()
+        mock_connection = Mock()
+        mock_connection.ip_address = "192.168.1.100"
+        mock_connection.thread = Mock()
+        mock_connection.thread.is_alive = Mock(return_value=False)
+        mock_connection.model = Mock()
+        mock_connection.model.setup_device = Mock()
+        mock_connection.config = IC256_CONFIG
+        mock_connection.client = Mock()
+        mock_connection.channels = {}
+        mock_connection.field_to_path = {}
+        app.device_manager.connections[IC256_CONFIG.device_name] = mock_connection
+        
+        # Simulate a previous acquisition that left _running = True
+        app.device_manager._running = True
+        
+        with patch('ic256_sampler.application.safe_gui_update'), \
+             patch('ic256_sampler.application.set_button_state_safe'), \
+             patch('ic256_sampler.application.show_message_safe'), \
+             patch('ic256_sampler.application.log_message_safe'), \
+             patch('ic256_sampler.application.get_timestamp_strings', return_value=("20240101", "120000")), \
+             patch('ic256_sampler.application.ModelCollector') as mock_collector_class, \
+             patch('ic256_sampler.application.collect_data_with_model'), \
+             patch('threading.Thread'):
+            
+            # Track if stop() was called
+            stop_called = [False]
+            original_stop = app.device_manager.stop
+            
+            def track_stop():
+                stop_called[0] = True
+                original_stop()
+            
+            app.device_manager.stop = track_stop
+            
+            # Start new acquisition
+            app._device_thread()
+            
+            # CRITICAL: Verify stop() was called to reset _running
+            assert stop_called[0], "device_manager.stop() MUST be called before starting new acquisition to reset _running state"
+            assert app.device_manager._running is False, "_running should be False after stop() is called"
+
+    def test_device_manager_start_actually_starts_threads(self):
+        """CRITICAL REGRESSION TEST: Verify that device_manager.start() actually starts threads.
+        
+        This test ensures that when start() is called with _running=False, threads are actually started,
+        preventing the regression where _running=True causes start() to return early.
+        """
+        device_manager = DeviceManager()
+        device_manager._running = False  # Ensure it's False
+        device_manager.stop_event = threading.Event()
+        device_manager.stop_event.clear()
+        
+        # Create a mock connection with a thread
+        mock_thread = Mock()
+        mock_thread.is_alive = Mock(return_value=False)
+        mock_thread.start = Mock()
+        
+        from ic256_sampler.device_manager import DeviceConnection
+        mock_connection = DeviceConnection(
+            config=IC256_CONFIG,
+            ip_address="192.168.1.100",
+            client=Mock(),
+            channels={},
+            model=Mock(),
+            field_to_path={},
+            thread=mock_thread,
+            keepalive_thread=Mock(),
+        )
+        
+        device_manager.connections[IC256_CONFIG.device_name] = mock_connection
+        
+        # Call start() - should start the thread because _running is False
+        device_manager.start()
+        
+        # CRITICAL: Verify thread was started
+        assert device_manager._running is True, "_running should be True after start()"
+        mock_thread.start.assert_called_once(), \
+            "Thread MUST be started when _running is False. " \
+            "If _running is True, start() returns early and threads won't start, " \
+            "causing data collection to stop after one row."
+
+    def test_device_manager_running_state_reset_between_acquisitions(self):
+        """CRITICAL REGRESSION TEST: Verify _running state is properly reset between acquisitions.
+        
+        This test ensures that _running is False when starting a new acquisition,
+        preventing the bug where start() returns early because _running is still True.
+        """
+        app = Application()
+        mock_window = Mock()
+        mock_window.ix256_a_entry = Mock()
+        mock_window.ix256_a_entry.get = Mock(return_value="192.168.1.100")
+        mock_window.tx2_entry = Mock()
+        mock_window.tx2_entry.get = Mock(return_value="")
+        mock_window.note_entry = Mock()
+        mock_window.note_entry.get = Mock(return_value="Test Note")
+        mock_window.path_entry = Mock()
+        mock_window.path_entry.get = Mock(return_value="/test/path")
+        mock_window.sampling_entry = Mock()
+        mock_window.sampling_entry.get = Mock(return_value="500")
+        mock_window.root = Mock()
+        mock_window.root.after = Mock()
+        mock_window.reset_elapse_time = Mock()
+        mock_window.reset_statistics = Mock()
+        app.window = mock_window
+        
+        # Setup device manager
+        app.device_manager = DeviceManager()
+        mock_connection = Mock()
+        mock_connection.ip_address = "192.168.1.100"
+        mock_connection.thread = Mock()
+        mock_connection.thread.is_alive = Mock(return_value=False)
+        mock_connection.model = Mock()
+        mock_connection.model.setup_device = Mock()
+        mock_connection.config = IC256_CONFIG
+        mock_connection.client = Mock()
+        mock_connection.channels = {}
+        mock_connection.field_to_path = {}
+        app.device_manager.connections[IC256_CONFIG.device_name] = mock_connection
+        
+        # Simulate first acquisition ending with _running = True
+        app.device_manager._running = True
+        app.device_manager.stop_event.set()
+        
+        with patch('ic256_sampler.application.safe_gui_update'), \
+             patch('ic256_sampler.application.set_button_state_safe'), \
+             patch('ic256_sampler.application.show_message_safe'), \
+             patch('ic256_sampler.application.log_message_safe'), \
+             patch('ic256_sampler.application.get_timestamp_strings', return_value=("20240101", "120000")), \
+             patch('ic256_sampler.application.ModelCollector'), \
+             patch('ic256_sampler.application.collect_data_with_model'), \
+             patch('threading.Thread'):
+            
+            # Start second acquisition
+            app._device_thread()
+            
+            # CRITICAL: After _device_thread, _running should be False (reset by stop())
+            # This is the key regression test - _running must be False so start() will actually start threads
+            assert app.device_manager._running is False, \
+                "_running MUST be False after _device_thread() completes setup. " \
+                "If True, device_manager.start() will return early and threads won't start, " \
+                "causing data collection to stop after one row."
+
+    def test_device_manager_start_not_blocked_by_running_flag(self):
+        """CRITICAL REGRESSION TEST: Verify start() is not blocked when _running is False.
+        
+        This test directly verifies that device_manager.start() will start threads
+        when _running is False, preventing the regression.
+        """
+        device_manager = DeviceManager()
+        device_manager._running = False  # Ensure it's False
+        device_manager.stop_event = threading.Event()
+        device_manager.stop_event.clear()
+        
+        # Create a mock connection with a thread
+        mock_thread = Mock()
+        mock_thread.is_alive = Mock(return_value=False)
+        mock_thread.start = Mock()
+        
+        from ic256_sampler.device_manager import DeviceConnection
+        mock_connection = DeviceConnection(
+            config=IC256_CONFIG,
+            ip_address="192.168.1.100",
+            client=Mock(),
+            channels={},
+            model=Mock(),
+            field_to_path={},
+            thread=mock_thread,
+            keepalive_thread=Mock(),
+        )
+        
+        device_manager.connections[IC256_CONFIG.device_name] = mock_connection
+        
+        # Call start() - should start the thread
+        device_manager.start()
+        
+        # Verify thread was started
+        assert device_manager._running is True, "_running should be True after start()"
+        mock_thread.start.assert_called_once(), "Thread should be started when _running is False"
+        
+        # Now test the regression case: if _running is True, start() should return early
+        device_manager._running = True
+        mock_thread.start.reset_mock()
+        
+        # Call start() again - should return early without starting thread
+        device_manager.start()
+        
+        # Thread should NOT be started again (because _running was already True)
+        mock_thread.start.assert_not_called(), \
+            "Thread should NOT be started if _running is already True (start() returns early)"
+
+    def test_application_stops_device_manager_before_new_acquisition(self):
+        """Integration test: Verify application properly stops device_manager before new acquisition.
+        
+        This test simulates the real scenario where a user:
+        1. Starts an acquisition
+        2. Stops it
+        3. Starts a new acquisition
+        
+        Verifies that device_manager.stop() is called to reset state.
+        """
+        app = Application()
+        mock_window = Mock()
+        mock_window.ix256_a_entry = Mock()
+        mock_window.ix256_a_entry.get = Mock(return_value="192.168.1.100")
+        mock_window.tx2_entry = Mock()
+        mock_window.tx2_entry.get = Mock(return_value="")
+        mock_window.note_entry = Mock()
+        mock_window.note_entry.get = Mock(return_value="Test Note")
+        mock_window.path_entry = Mock()
+        mock_window.path_entry.get = Mock(return_value="/test/path")
+        mock_window.sampling_entry = Mock()
+        mock_window.sampling_entry.get = Mock(return_value="500")
+        mock_window.root = Mock()
+        mock_window.root.after = Mock()
+        mock_window.reset_elapse_time = Mock()
+        mock_window.reset_statistics = Mock()
+        app.window = mock_window
+        
+        # Setup device manager
+        app.device_manager = DeviceManager()
+        mock_connection = Mock()
+        mock_connection.ip_address = "192.168.1.100"
+        mock_connection.thread = Mock()
+        mock_connection.thread.is_alive = Mock(return_value=False)
+        mock_connection.model = Mock()
+        mock_connection.model.setup_device = Mock()
+        mock_connection.config = IC256_CONFIG
+        mock_connection.client = Mock()
+        mock_connection.channels = {}
+        mock_connection.field_to_path = {}
+        app.device_manager.connections[IC256_CONFIG.device_name] = mock_connection
+        
+        # Track stop() calls
+        stop_call_count = [0]
+        original_stop = app.device_manager.stop
+        
+        def track_stop():
+            stop_call_count[0] += 1
+            original_stop()
+        
+        app.device_manager.stop = track_stop
+        
+        with patch('ic256_sampler.application.safe_gui_update'), \
+             patch('ic256_sampler.application.set_button_state_safe'), \
+             patch('ic256_sampler.application.show_message_safe'), \
+             patch('ic256_sampler.application.log_message_safe'), \
+             patch('ic256_sampler.application.get_timestamp_strings', return_value=("20240101", "120000")), \
+             patch('ic256_sampler.application.ModelCollector'), \
+             patch('ic256_sampler.application.collect_data_with_model'), \
+             patch('threading.Thread'):
+            
+            # Simulate first acquisition
+            app.device_manager._running = True  # Simulate it was running
+            app._device_thread()
+            
+            # Verify stop() was called
+            assert stop_call_count[0] >= 1, \
+                "device_manager.stop() should be called in _device_thread() to reset state before new acquisition"
+            
+            # Verify _running was reset
+            assert app.device_manager._running is False, \
+                "_running should be False after stop() is called, allowing start() to work in next acquisition"

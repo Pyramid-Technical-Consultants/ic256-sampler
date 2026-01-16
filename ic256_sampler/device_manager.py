@@ -436,13 +436,25 @@ class DeviceManager:
         """Collect data from a single device into the shared IODatabase.
         
         This is the thread target for each device connection during active collection.
-        Note: The keep-alive thread handles the message loop, so this thread
-        primarily focuses on data collection when active.
+        This thread calls updateSubscribedFields() to process incoming messages and
+        then collects data from the channels. The keep-alive thread also calls
+        updateSubscribedFields() to keep the connection alive, but both threads
+        can safely call it as the websocket handles message queuing.
         """
         first_timestamp: Optional[int] = None
         
         try:
             while not self.stop_event.is_set():
+                # Process incoming messages to fill channel datums
+                # This is safe to call from multiple threads as the websocket
+                # handles message queuing and the field.update() method is thread-safe
+                try:
+                    client.updateSubscribedFields()
+                except Exception as e:
+                    # If update fails, log and continue - keep-alive thread will handle reconnection
+                    print(f"Warning: updateSubscribedFields failed in collection thread: {e}")
+                
+                # Collect data from all channels
                 first_timestamp = self._collect_all_channel_data(
                     channels, field_to_path, first_timestamp
                 )
