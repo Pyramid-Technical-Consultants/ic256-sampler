@@ -363,34 +363,52 @@ class Application:
             restore_thread.start()
     
     def stop_collection(self) -> None:
-        """Stop data collection and cleanup resources."""
+        """Stop data collection and cleanup resources.
+        
+        This method:
+        1. Stops new data collection (sets stop_event, stops DeviceManager)
+        2. Waits for collector thread to finish processing all collected data
+        3. Only re-enables start button after all data is written to CSV
+        """
         if not self.window:
             return
         
+        # Phase 1: Stop new data collection
         self.stop_event.set()
         
-        # Stop collector and device manager
-        if self.collector:
-            try:
-                self.collector.stop()
-            except Exception:
-                pass
-        
+        # Stop DeviceManager (stops collecting new data from devices)
         if self.device_manager:
             try:
                 self.device_manager.stop()
             except Exception:
                 pass
         
-        # Wait for collector thread
-        if self.collector_thread and self.collector_thread.is_alive():
-            self.collector_thread.join(timeout=THREAD_JOIN_TIMEOUT)
+        # Stop collector (marks as stopped, but processing continues)
+        if self.collector:
+            try:
+                self.collector.stop()
+            except Exception:
+                pass
         
-        # Reset GUI
+        # Phase 2: Wait for collector thread to finish processing all data
+        # The collector thread will continue processing until all data is written
+        if self.collector_thread and self.collector_thread.is_alive():
+            # Update GUI to show we're finishing up
+            show_message_safe(self.window, "Finishing data write...", "blue")
+            log_message_safe(self.window, "Stopped data collection, finishing CSV write...", "INFO")
+            
+            # Wait for thread to finish (with longer timeout for large datasets)
+            self.collector_thread.join(timeout=THREAD_JOIN_TIMEOUT * 2)
+            
+            if self.collector_thread.is_alive():
+                # Thread didn't finish in time - log warning but continue
+                log_message_safe(self.window, "Warning: CSV write took longer than expected", "WARNING")
+        
+        # Phase 3: Reset GUI - only enable start button after all work is done
         set_button_state_safe(self.window, "stop_button", "disabled")
         set_button_state_safe(self.window, "start_button", "normal")
         show_message_safe(self.window, "Data collection stopped.", "blue")
-        log_message_safe(self.window, "Data collection stopped", "INFO")
+        log_message_safe(self.window, "Data collection stopped and CSV write completed", "INFO")
     
     def _stop_collection_old(self) -> None:
         """Stop data collection and restore device settings."""

@@ -96,13 +96,11 @@ class ModelCollector:
     def start(self) -> None:
         """Start data collection.
         
-        Subscribes to all channels with buffered data and initializes collection.
+        Starts the DeviceManager to begin collecting data from all devices,
+        then marks this collector as running.
         """
-        # Subscribe all channels with buffered data
-        self.device_client.sendSubscribeFields({
-            field: True for field in self.channels.values()
-        })
-        self.device_client.updateSubscribedFields()
+        # Start DeviceManager to begin data collection from all devices
+        self.device_manager.start()
         
         self._running = True
     
@@ -119,9 +117,9 @@ class ModelCollector:
         This method only processes the collected data.
         
         This should be called in a loop while collection is active.
+        This method will continue processing even after _running is False
+        to ensure all collected data is written to CSV.
         """
-        if not self._running:
-            return
         
         # STEP 1: Rebuild virtual database with new data from shared IODatabase
         # This creates rows at the sampling rate with all conversions applied
@@ -154,9 +152,19 @@ class ModelCollector:
                 self.virtual_database.prune_rows(keep_last_n=1000)
     
     def stop(self) -> None:
-        """Stop data collection and finalize output."""
-        self._running = False
+        """Stop data collection (but continue processing existing data).
         
+        This marks the collector as stopped, which will stop new data collection
+        from DeviceManager, but processing will continue until all data is written.
+        """
+        self._running = False
+    
+    def finalize(self) -> None:
+        """Finalize output after all data has been processed.
+        
+        This should be called after all data collection and processing is complete.
+        It performs final flush, sync, and close operations.
+        """
         # Final flush and close
         self.csv_writer.flush()
         self.csv_writer.sync()
@@ -169,6 +177,19 @@ class ModelCollector:
             except (OSError, AttributeError):
                 pass
     
+    def is_finished(self) -> bool:
+        """Check if all data has been processed and written.
+        
+        Returns:
+            True if all data has been processed (no new rows to write)
+        """
+        # Rebuild to ensure we have the latest rows from the database
+        self.virtual_database.rebuild()
+        
+        # Check if there are any unwritten rows
+        total_rows = self.virtual_database.get_row_count()
+        return self.csv_writer.rows_written >= total_rows
+    
     def get_statistics(self) -> Dict[str, Any]:
         """Get current collection statistics.
         
@@ -178,73 +199,6 @@ class ModelCollector:
         with self._lock:
             return self.statistics.copy()
     
-    def _collect_all_channel_data(self) -> Optional[int]:
-        """Collect ALL data from all channels and store in IODatabase.
-        
-        This is the core data collection function - it must be lossless.
-        
-        Returns:
-            Updated first timestamp (or None if no new data)
-        """
-        updated_first_timestamp = self.first_timestamp
-        
-        # Process each channel - each may have data or not (partial updates are normal)
-        for field_name, channel in self.channels.items():
-            try:
-                # Get array of arrays: [[value, timestamp], [value, timestamp], ...]
-                data = channel.getDatums()
-                
-                if not data:
-                    continue  # No data for this channel in this update - normal
-                
-                # Get channel path from field name mapping
-                channel_path = self.field_to_path.get(field_name)
-                if not channel_path:
-                    # Fallback: try to get path from field object
-                    try:
-                        channel_path = channel.getPath()
-                    except (AttributeError, TypeError):
-                        # Last resort: use field name
-                        channel_path = field_name
-                
-                # Ensure channel exists in database
-                if channel_path not in self.io_database.get_all_channels():
-                    self.io_database.add_channel(channel_path)
-                
-                # Process EVERY entry in the array
-                for data_point in data:
-                    if not isinstance(data_point, (list, tuple)) or len(data_point) < 2:
-                        continue
-                    
-                    value = data_point[0]
-                    ts_raw = data_point[1]
-                    
-                    # Convert timestamp to nanoseconds
-                    try:
-                        if isinstance(ts_raw, float):
-                            if ts_raw < 1e12:  # Likely seconds
-                                ts_ns = int(ts_raw * 1e9)
-                            else:  # Already in nanoseconds
-                                ts_ns = int(ts_raw)
-                        elif isinstance(ts_raw, int):
-                            ts_ns = ts_raw
-                        else:
-                            continue
-                    except (ValueError, TypeError, OverflowError):
-                        continue
-                    
-                    # Track first timestamp
-                    if updated_first_timestamp is None:
-                        updated_first_timestamp = ts_ns
-                    
-                    # Add to database (database handles elapsed time calculation)
-                    self.io_database.add_data_point(channel_path, value, ts_ns)
-                    
-            except Exception as e:
-                print(f"Error collecting data from {field_name}: {e}")
-                continue
-        
-        return updated_first_timestamp
 
 
 
@@ -256,19 +210,65 @@ def collect_data_with_model(
 ) -> None:
     """Run data collection loop with a ModelCollector.
     
-    This is a convenience function that runs the collection loop until
-    stop_event is set. Can be used as a thread target.
+    This function:
+    1. Starts data collection
+    2. Processes data while collection is active
+    3. When stop_event is set, stops new data collection but continues processing
+    4. Continues processing until all collected data is written to CSV
+    5. Finalizes output
     
     Args:
         collector: ModelCollector instance
-        stop_event: Threading event to signal stop
+        stop_event: Threading event to signal stop (stops new data collection)
         update_interval: Time between collection iterations (seconds)
     """
     collector.start()
     
     try:
+        # Phase 1: Active collection - collect and process data
         while not stop_event.is_set():
             collector.collect_iteration()
             time.sleep(update_interval)
+        
+        # Phase 2: Stop new data collection but continue processing existing data
+        collector.stop()  # This stops DeviceManager from collecting new data
+        
+        # Continue processing until all data is written
+        # Track previous row count to detect when we're done
+        max_iterations = 100000  # Safety limit
+        iteration = 0
+        consecutive_no_change = 0
+        previous_rows_written = 0
+        previous_virtual_rows = 0
+        
+        while iteration < max_iterations:
+            collector.collect_iteration()
+            iteration += 1
+            
+            # Check if we're making progress
+            current_rows = collector.csv_writer.rows_written
+            current_virtual_rows = collector.virtual_database.get_row_count()
+            
+            # Check if both virtual rows and written rows have stopped changing
+            if current_rows == previous_rows_written and current_virtual_rows == previous_virtual_rows:
+                consecutive_no_change += 1
+                # If no change for 20 iterations, we're done
+                if consecutive_no_change >= 20:
+                    break
+            else:
+                consecutive_no_change = 0
+                previous_rows_written = current_rows
+                previous_virtual_rows = current_virtual_rows
+            
+            # Small sleep to avoid tight loop, but process quickly
+            time.sleep(0.0001)  # 100 microseconds - faster than collection phase
+        
+        # Final processing pass to ensure everything is written
+        # Do a few more iterations to catch any remaining data
+        for _ in range(30):
+            collector.collect_iteration()
+            time.sleep(0.001)
+        
     finally:
-        collector.stop()
+        # Finalize output (flush, sync, close)
+        collector.finalize()

@@ -15,8 +15,8 @@ from pathlib import Path
 from datetime import datetime
 from ic256_sampler.utils import is_valid_device, is_valid_ipv4
 from ic256_sampler.igx_client import IGXWebsocketClient
-from ic256_sampler.device_manager import setup_device_thread, DeviceConfig, IC256_CONFIG
-from ic256_sampler.model_collector import ModelCollector, collect_data_with_model, set_up_device
+from ic256_sampler.device_manager import DeviceManager, DeviceConfig, IC256_CONFIG
+from ic256_sampler.model_collector import ModelCollector, collect_data_with_model
 from ic256_sampler.ic256_model import IC256Model
 from ic256_sampler.device_paths import IC256_45_PATHS
 
@@ -119,57 +119,52 @@ class TestDataCollectionRate:
         # Statistics dictionary to track rows
         statistics = {"rows": 0, "file_size": 0}
         
-        # Start data collection in a thread
-        def collect_data_thread():
-            try:
-                # Create client and channels using IC256_CONFIG
-                client = IGXWebsocketClient(ic256_ip)
-                channels = IC256_CONFIG.channel_creator(client)
-                env_channels = IC256_CONFIG.env_channel_creator(client) if IC256_CONFIG.env_channel_creator else None
-                
-                # Create model and set up device
-                model = IC256Model()
-                model.setup_device(client, sampling_rate)
-                
-                # Get reference channel and field mapping from model
-                reference_channel = model.get_reference_channel()
-                field_to_path = model.get_field_to_path_mapping()
-                
-                # Create ModelCollector
-                collector = ModelCollector(
-                    model=model,
-                    device_client=client,
-                    channels=channels,
-                    field_to_path=field_to_path,
-                    reference_channel=reference_channel,
-                    sampling_rate=sampling_rate,
-                    file_path=str(test_file),
-                    device_name="ic256_45",
-                    note="Integration test",
-                    env_channels=env_channels,
-                )
-                
-                # Share statistics
-                collector.statistics = statistics
-                
-                # Run collection
-                collect_data_with_model(collector, stop_event)
-            except Exception as e:
-                print(f"Data collection error: {e}")
-                import traceback
-                traceback.print_exc()
+        # Create DeviceManager to handle device connections
+        device_manager = DeviceManager()
+        device_manager.stop_event = stop_event
         
-        collection_thread = threading.Thread(target=collect_data_thread, daemon=True)
+        # Add device to manager
+        if not device_manager.add_device(IC256_CONFIG, ic256_ip, sampling_rate):
+            pytest.skip(f"Failed to add IC256 device at {ic256_ip}")
+        
+        # Create model and get reference channel
+        model = IC256Model()
+        reference_channel = model.get_reference_channel()
+        
+        # Create ModelCollector
+        collector = ModelCollector(
+            device_manager=device_manager,
+            model=model,
+            reference_channel=reference_channel,
+            sampling_rate=sampling_rate,
+            file_path=str(test_file),
+            device_name="ic256_45",
+            note="Integration test",
+        )
+        
+        # Share statistics
+        collector.statistics = statistics
+        
+        # Start data collection in a thread
+        collection_thread = threading.Thread(
+            target=collect_data_with_model,
+            args=(collector, stop_event),
+            daemon=True
+        )
         collection_thread.start()
+        
+        # Give device time to connect and start collecting (startup delay)
+        time.sleep(1.0)
         
         # Wait for collection duration
         time.sleep(collection_duration)
         
         # Stop collection
         stop_event.set()
+        device_manager.stop()  # Also stop DeviceManager explicitly
         
         # Wait for thread to finish (with timeout)
-        collection_thread.join(timeout=10.0)
+        collection_thread.join(timeout=15.0)
         
         # Verify file was created
         assert test_file.exists(), f"Data file was not created: {test_file}"

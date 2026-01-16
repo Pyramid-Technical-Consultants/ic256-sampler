@@ -97,6 +97,7 @@ class VirtualDatabase:
         self.columns = columns
         self.rows: List[VirtualRow] = []
         self._built = False
+        self._last_built_time: Optional[float] = None  # Track last built timestamp for incremental builds
     
     def get_headers(self) -> List[str]:
         """Get CSV header names for all columns.
@@ -120,15 +121,21 @@ class VirtualDatabase:
         if not ref_channel or ref_channel.count == 0:
             return  # No data to build from
         
+        # Create snapshot to avoid mutation during iteration
+        ref_snapshot = list(ref_channel.data_points)
+        if not ref_snapshot:
+            return
+        
         # Determine time range from reference channel
-        first_elapsed = ref_channel.data_points[0].elapsed_time
-        last_elapsed = ref_channel.data_points[-1].elapsed_time
+        first_elapsed = ref_snapshot[0].elapsed_time
+        last_elapsed = ref_snapshot[-1].elapsed_time
         
         # Calculate row interval
         row_interval = 1.0 / self.sampling_rate
         
         # Create rows at regular intervals
         current_time = first_elapsed
+        last_row_time = None
         while current_time <= last_elapsed:
             # Get data for all columns at this timestamp
             row_data = self._get_row_data_at_time(current_time, row_interval)
@@ -136,11 +143,15 @@ class VirtualDatabase:
             # Create virtual row
             row = VirtualRow(timestamp=current_time, data=row_data)
             self.rows.append(row)
+            last_row_time = current_time
             
             # Advance to next row time
             current_time += row_interval
         
         self._built = True
+        # Set to last row's timestamp, not last data point's elapsed time
+        # This ensures incremental rebuild starts from the correct position
+        self._last_built_time = last_row_time if last_row_time is not None else last_elapsed
     
     def _get_row_data_at_time(
         self,
@@ -235,10 +246,23 @@ class VirtualDatabase:
         if not data_points:
             return None
         
+        # Create snapshot to avoid RuntimeError if deque is modified during iteration
+        # Always snapshot first, then filter if needed for optimization
+        snapshot = list(data_points)
+        
+        # Optimize by filtering to relevant time window (if snapshot is large)
+        if len(snapshot) > 1000:
+            min_time = target_elapsed - tolerance
+            max_time = target_elapsed + tolerance
+            snapshot = [p for p in snapshot if min_time <= p.elapsed_time <= max_time]
+        
+        if not snapshot:
+            return None
+        
         closest = None
         min_diff = float('inf')
         
-        for point in data_points:
+        for point in snapshot:
             diff = abs(point.elapsed_time - target_elapsed)
             if diff < min_diff and diff <= tolerance:
                 min_diff = diff
@@ -255,7 +279,7 @@ class VirtualDatabase:
         """Find value with exact timestamp match (for synchronized channels).
         
         Args:
-            data_points: List of data points to search
+            data_points: List or deque of data points to search
             ref_timestamp_ns: Reference timestamp in nanoseconds
             tolerance_ns: Tolerance in nanoseconds
             
@@ -265,7 +289,11 @@ class VirtualDatabase:
         if ref_timestamp_ns is None:
             return None
         
-        for point in data_points:
+        # Create snapshot to avoid RuntimeError if deque is modified during iteration
+        # For synchronized search, we need to check all points (timestamp-based, not time-based)
+        snapshot = list(data_points)
+        
+        for point in snapshot:
             if abs(point.timestamp_ns - ref_timestamp_ns) <= tolerance_ns:
                 return point.value
         
@@ -280,7 +308,7 @@ class VirtualDatabase:
         """Interpolate value at target time (for interpolated channels).
         
         Args:
-            data_points: List of data points to search
+            data_points: List or deque of data points to search
             target_elapsed: Target elapsed time
             tolerance: Maximum time difference for interpolation
             
@@ -290,13 +318,23 @@ class VirtualDatabase:
         if not data_points:
             return None
         
+        # Create snapshot to avoid RuntimeError if deque is modified during iteration
+        # Always snapshot first, then filter if needed for optimization
+        snapshot = list(data_points)
+        
+        # Optimize by filtering to relevant time window (if snapshot is large)
+        if len(snapshot) > 1000:
+            min_time = target_elapsed - tolerance
+            max_time = target_elapsed + tolerance
+            snapshot = [p for p in snapshot if min_time <= p.elapsed_time <= max_time]
+        
         # Find points before and after target
         before_point = None
         after_point = None
         before_diff = float('inf')
         after_diff = float('inf')
         
-        for point in data_points:
+        for point in snapshot:
             diff = point.elapsed_time - target_elapsed
             if diff <= 0 and abs(diff) < before_diff:
                 before_point = point
@@ -342,7 +380,7 @@ class VirtualDatabase:
         """Find nearest value (for asynchronous channels).
         
         Args:
-            data_points: List of data points to search
+            data_points: List or deque of data points to search
             target_elapsed: Target elapsed time
             tolerance: Maximum time difference
             
@@ -352,10 +390,20 @@ class VirtualDatabase:
         if not data_points:
             return None
         
+        # Create snapshot to avoid RuntimeError if deque is modified during iteration
+        # Always snapshot first, then filter if needed for optimization
+        snapshot = list(data_points)
+        
+        # Optimize by filtering to relevant time window (if snapshot is large)
+        if len(snapshot) > 1000:
+            min_time = target_elapsed - tolerance
+            max_time = target_elapsed + tolerance
+            snapshot = [p for p in snapshot if min_time <= p.elapsed_time <= max_time]
+        
         closest = None
         min_diff = float('inf')
         
-        for point in data_points:
+        for point in snapshot:
             diff = abs(point.elapsed_time - target_elapsed)
             if diff < min_diff and diff <= tolerance:
                 min_diff = diff
@@ -437,11 +485,66 @@ class VirtualDatabase:
         """Clear all rows from the virtual database."""
         self.rows.clear()
         self._built = False
+        self._last_built_time = None
     
     def rebuild(self) -> None:
-        """Rebuild the virtual database from the IO database."""
-        self.clear()
-        self.build()
+        """Rebuild the virtual database from the IO database.
+        
+        This method is incremental - it only builds new rows since the last build,
+        making it much more efficient than a full rebuild.
+        """
+        # Get reference channel data
+        ref_channel = self.io_database.get_channel(self.reference_channel)
+        if not ref_channel or ref_channel.count == 0:
+            return  # No data to build from
+        
+        # For incremental rebuild, we only need the last data point to check if there's new data
+        # We can avoid creating a full snapshot if we just need to check the last point
+        if not ref_channel.data_points:
+            return
+        
+        # Get last data point without full snapshot (more efficient)
+        # Access last element directly from deque (O(1) operation)
+        last_data_point = ref_channel.data_points[-1]
+        last_elapsed = last_data_point.elapsed_time
+        
+        # If not built yet, do a full build
+        if not self._built or self._last_built_time is None:
+            self.clear()
+            self.build()
+            return
+        
+        # If no new data, skip (with small tolerance for floating point)
+        if last_elapsed <= self._last_built_time + 1e-9:
+            return
+        
+        # Calculate row interval
+        row_interval = 1.0 / self.sampling_rate
+        
+        # Start from the next row after the last built time
+        # Since _last_built_time is the timestamp of the last row built,
+        # we simply add row_interval to get the next row time
+        start_time = self._last_built_time + row_interval
+        
+        # Build only new rows incrementally
+        current_time = start_time
+        last_row_time = self._last_built_time
+        while current_time <= last_elapsed:
+            # Get data for all columns at this timestamp
+            row_data = self._get_row_data_at_time(current_time, row_interval)
+            
+            # Create virtual row
+            row = VirtualRow(timestamp=current_time, data=row_data)
+            self.rows.append(row)
+            last_row_time = current_time
+            
+            # Advance to next row time
+            current_time += row_interval
+        
+        # Update last built time to the timestamp of the last row built
+        # This ensures we don't skip rows in the next incremental build
+        if last_row_time is not None:
+            self._last_built_time = last_row_time
     
     def prune_rows(self, keep_last_n: int) -> int:
         """Prune old rows from the virtual database to save memory.

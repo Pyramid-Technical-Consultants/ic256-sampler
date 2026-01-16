@@ -7,6 +7,7 @@ that all devices feed into.
 
 from typing import Dict, Optional, Any, Callable, List
 import threading
+import time
 from datetime import datetime
 from .igx_client import IGXWebsocketClient
 from .io_database import IODatabase
@@ -256,7 +257,7 @@ class DeviceManager:
                 )
                 
                 # Small sleep to prevent tight loop
-                threading.Event().wait(0.001)
+                time.sleep(0.001)
                 
         except Exception as e:
             print(f"Error collecting data from {config.device_name} at {ip_address}: {e}")
