@@ -1,8 +1,8 @@
-# install: pip install websocket-client // python3
+# install: pip install websocket-client msgpack // python3
 
 import websocket
 import time
-import json
+import msgpack
 from pprint import pprint
 import requests
 import threading
@@ -157,14 +157,27 @@ class IGXWebsocketClient:
         if ip == "":
             self.ws = ""
         else:
-            self.ws = websocket.create_connection("ws://" + self.ip)
+            # Try MessagePack subprotocol ("mpack") first, fall back to regular WebSocket if not supported
+            try:
+                self.ws = websocket.create_connection(
+                    "ws://" + self.ip,
+                    subprotocols=["mpack"]
+                )
+            except (websocket.WebSocketException, ValueError, OSError):
+                # Server doesn't support MessagePack subprotocol, use regular WebSocket
+                # We can still send MessagePack as binary frames without subprotocol negotiation
+                self.ws = websocket.create_connection("ws://" + self.ip)
 
     def sendEventData(self, event, data=None):
         if self.ws == "":
             return
 
         if self.ws.connected:
-            self.ws.send(json.dumps({"event": event, "data": data}))
+            message = {"event": event, "data": data}
+            packed = msgpack.packb(message, use_bin_type=True)
+            # Send as binary frame (MessagePack is binary)
+            # websocket-client automatically sends bytes as binary frames
+            self.ws.send(packed)
         else:
             print("Reconnecting :", self.ip)
             self.reconnect()
@@ -173,14 +186,13 @@ class IGXWebsocketClient:
         self.sendEventData("subscribe", {key: False for key in fields.keys()})
 
     def sendSubscribeFields(self, fields):
-
         self.subscribedFields = fields
 
-        fieldJson = {}
+        field_data = {}
         for f, b in fields.items():
-            fieldJson[f"{f.getPath()}"] = b
+            field_data[f"{f.getPath()}"] = b
 
-        self.sendEventData("subscribe", fieldJson)
+        self.sendEventData("subscribe", field_data)
 
     def sendSubscribeIOs(self, ios):
 
@@ -204,13 +216,23 @@ class IGXWebsocketClient:
 
         try:
             dm = self.ws.recv()
-            m = json.loads(dm)
+            # MessagePack messages are binary
+            if isinstance(dm, bytes):
+                m = msgpack.unpackb(dm, raw=False)
+            elif isinstance(dm, str):
+                # If we get text, try to decode as MessagePack (shouldn't happen with MessagePack protocol)
+                m = msgpack.unpackb(dm.encode('latin1'), raw=False)
+            else:
+                return {}
+            
             if isinstance(m, dict) and bool(m):
                 return m
             else:
                 return {}
-        except (websocket.WebSocketException, json.JSONDecodeError, ValueError, AttributeError) as e:
-            print(f"error: json.load - {type(e).__name__}: {str(e)}")
+        except Exception as e:
+            # Catch all exceptions including MessagePack unpack errors
+            # (msgpack.exceptions may not be available in all versions)
+            print(f"error: msgpack.unpack - {type(e).__name__}: {str(e)}")
             return {}
 
     def getAndWaitReponse(self):
@@ -227,7 +249,16 @@ class IGXWebsocketClient:
         self.updateSubscribedFields()
 
     def reconnect(self):
-        self.ws = websocket.create_connection("ws://" + self.ip)
+        # Try MessagePack subprotocol ("mpack") first, fall back to regular WebSocket if not supported
+        try:
+            self.ws = websocket.create_connection(
+                "ws://" + self.ip,
+                subprotocols=["mpack"]
+            )
+        except (websocket.WebSocketException, ValueError, OSError):
+            # Server doesn't support MessagePack subprotocol, use regular WebSocket
+            # We can still send MessagePack as binary frames without subprotocol negotiation
+            self.ws = websocket.create_connection("ws://" + self.ip)
         self.sendSubscribeFields(self.subscribedFields)
 
     def close(self):

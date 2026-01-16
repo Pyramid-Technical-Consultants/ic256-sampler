@@ -24,7 +24,10 @@ Python application for collecting data from IC256 and TX2 measurement devices vi
 
 ## Testing
 - Integration tests use IPs from `config.json` (see `tests/conftest.py`)
-- Skip integration tests: `pytest -m "not integration"`
+- **Integration tests are really important** - always run them when making changes
+- **Always assume we have a live device available for testing** - don't skip integration tests
+- Skip integration tests only when explicitly requested: `pytest -m "not integration"`
+- When running tests, always include integration tests: `pytest tests/ -v`
 
 ## Documentation Guidelines
 - **DO NOT** create change summary markdown files (REFACTORING_SUMMARY.md, CHANGES.md, etc.)
