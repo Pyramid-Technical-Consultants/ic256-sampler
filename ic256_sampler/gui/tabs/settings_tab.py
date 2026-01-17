@@ -5,7 +5,15 @@ from typing import Callable
 from tkinter import filedialog
 
 from ..styles import COLORS, FONTS
-from ..components import StandardButton, StandardEntry, ToolTip
+from ..components import (
+    StandardButton,
+    StandardSection,
+    FormField,
+    FormFieldWithButton,
+    ScrollableFrame,
+    IconButton,
+    ToolTip,
+)
 from ...config import update_file_json, init_ip
 from ...utils import is_valid_device
 
@@ -18,7 +26,8 @@ class SettingsTab:
         parent: tk.Widget,
         setup_callback: Callable,
         image_loader,
-        update_icon_callback: Callable
+        update_icon_callback: Callable,
+        update_tab_title_callback: Callable = None
     ):
         """Initialize settings tab.
         
@@ -27,38 +36,37 @@ class SettingsTab:
             setup_callback: Callback for setup button
             image_loader: ImageLoader instance
             update_icon_callback: Callback(button, entry, device_name) for icon updates
+            update_tab_title_callback: Callback(text) to update tab title
         """
         self.parent = parent
         self.setup_callback = setup_callback
         self.image_loader = image_loader
         self._update_icon_callback = update_icon_callback
+        self._update_tab_title = update_tab_title_callback
+        self._has_unsaved_changes = False
+        self._initial_values = {}
         
         # Configure tab for resizing
         self.parent.grid_rowconfigure(0, weight=1)
         self.parent.grid_columnconfigure(0, weight=1)
         
-        # Main container
-        main_container = tk.Frame(self.parent, bg=COLORS["background"])
+        # Create scrollable frame
+        scrollable = ScrollableFrame(self.parent)
+        main_container = scrollable.get_frame()
         main_container.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
-        main_container.grid_rowconfigure(0, weight=1)
         main_container.grid_columnconfigure(0, weight=1)
         
-        # Centered content frame
-        content_frame = tk.Frame(main_container, bg=COLORS["background"])
-        content_frame.grid(row=0, column=0)
-        content_frame.grid_columnconfigure(0, weight=1)
-        
         # Device configuration section
-        self._create_device_section(content_frame)
+        self._create_device_section(main_container)
         
         # Sampling rate section
-        self._create_sampling_section(content_frame)
+        self._create_sampling_section(main_container)
         
         # Path configuration section
-        self._create_path_section(content_frame)
+        self._create_path_section(main_container)
         
         # Save configuration button
-        self._create_save_section(content_frame)
+        self._create_save_section(main_container)
         
         # Initialize IP addresses from config
         init_ip(
@@ -67,113 +75,83 @@ class SettingsTab:
             self.path_entry,
             self.sampling_entry,
         )
+        
+        # Store initial values for change detection
+        self._store_initial_values()
+        
+        # Bind to entry changes to track unsaved changes
+        self._setup_change_tracking()
     
     def _create_device_section(self, parent: tk.Widget):
         """Create device configuration section."""
-        device_section = tk.LabelFrame(
+        device_section = StandardSection.create(
             parent,
-            text="Device Configuration",
-            font=FONTS["heading"],
-            bg=COLORS["background"],
-            fg=COLORS["text_primary"],
-            relief="groove",
-            padx=15,
-            pady=10
+            "Device Configuration",
+            row=0,
+            column=0
         )
-        device_section.grid(row=0, column=0, pady=15, padx=10, sticky="ew")
         device_section.grid_columnconfigure(1, weight=1)
         
-        # IC256 device entry
-        ic256_label = tk.Label(
+        # IC256 device entry with button
+        search_icon = self.image_loader.load_image("search.png", (20, 20))
+        ic256_field = FormFieldWithButton(
             device_section,
-            font=FONTS["label"],
-            text="IC256-42/35:",
-            bg=COLORS["background"],
-            fg=COLORS["text_primary"],
-            width=15,
-            anchor="w"
+            "IC256-42/35:",
+            row=0,
+            column=0,
+            entry_width=30,
+            button_image=search_icon,
+            button_command=lambda: self._update_icon_callback(ic256_field.button, ic256_field.entry, "IC256"),
+            button_tooltip="Check IP address",
+            entry_tooltip="IC256 device IP address (e.g., 192.168.1.100). Click search icon to validate.",
+            change_callback=self._on_setting_changed
         )
-        ic256_label.grid(row=0, column=0, padx=10, pady=10, sticky="w")
+        self.ix256_a_entry = ic256_field.entry
+        self.ix256_a_button = ic256_field.button
         
-        self.ix256_a_entry = StandardEntry.create(device_section, width=30)
-        self.ix256_a_entry.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
-        ToolTip(self.ix256_a_entry, "IC256 device IP address (e.g., 192.168.1.100). Click search icon to validate.", 0, 20)
-        
-        self.ix256_a_button = tk.Button(
+        # TX2 device entry with button
+        tx2_field = FormFieldWithButton(
             device_section,
-            image=self.image_loader.load_image("search.png", (13, 13)),
-            command=lambda: self._update_icon_callback(self.ix256_a_button, self.ix256_a_entry, "IC256"),
-            relief="raised",
-            bg=COLORS["background"],
-            cursor="hand2"
+            "TX2:",
+            row=1,
+            column=0,
+            entry_width=30,
+            button_image=search_icon,
+            button_command=lambda: self._update_icon_callback(tx2_field.button, tx2_field.entry, "TX2"),
+            button_tooltip="Check IP address",
+            entry_tooltip="TX2 device IP address (e.g., 192.168.1.101). Click search icon to validate.",
+            change_callback=self._on_setting_changed
         )
-        self.ix256_a_button.grid(row=0, column=2, padx=5, pady=10)
-        ToolTip(self.ix256_a_button, "Check IP address", 0, 20)
-        
-        # TX2 device entry
-        tx2_label = tk.Label(
-            device_section,
-            font=FONTS["label"],
-            text="TX2:",
-            bg=COLORS["background"],
-            fg=COLORS["text_primary"],
-            width=15,
-            anchor="w"
-        )
-        tx2_label.grid(row=1, column=0, padx=10, pady=10, sticky="w")
-        
-        self.tx2_entry = StandardEntry.create(device_section, width=30)
-        self.tx2_entry.grid(row=1, column=1, padx=10, pady=10, sticky="ew")
-        ToolTip(self.tx2_entry, "TX2 device IP address (e.g., 192.168.1.101). Click search icon to validate.", 0, 20)
-        
-        self.tx2_button = tk.Button(
-            device_section,
-            image=self.image_loader.load_image("search.png", (13, 13)),
-            command=lambda: self._update_icon_callback(self.tx2_button, self.tx2_entry, "TX2"),
-            relief="raised",
-            bg=COLORS["background"],
-            cursor="hand2"
-        )
-        self.tx2_button.grid(row=1, column=2, padx=5, pady=10)
-        ToolTip(self.tx2_button, "Check IP address", 0, 20)
+        self.tx2_entry = tx2_field.entry
+        self.tx2_button = tx2_field.button
     
     def _create_sampling_section(self, parent: tk.Widget):
         """Create sampling rate configuration section."""
-        sampling_section = tk.LabelFrame(
+        sampling_section = StandardSection.create(
             parent,
-            text="Sampling Configuration",
-            font=FONTS["heading"],
-            bg=COLORS["background"],
-            fg=COLORS["text_primary"],
-            relief="groove",
-            padx=15,
-            pady=10
+            "Sampling Configuration",
+            row=1,
+            column=0
         )
-        sampling_section.grid(row=1, column=0, pady=15, padx=10, sticky="ew")
         sampling_section.grid_columnconfigure(1, weight=1)
         
-        sampling_label = tk.Label(
-            sampling_section,
-            font=FONTS["label"],
-            text="Sampling Rate (1-6000 Hz):",
-            bg=COLORS["background"],
-            fg=COLORS["text_primary"],
-            width=20,
-            anchor="w"
-        )
-        sampling_label.grid(row=0, column=0, padx=10, pady=10, sticky="w")
-        
+        # Sampling rate entry
         self.entry_var = tk.StringVar()
-        self.entry_var.trace("w", self._sampling_change)
+        self.entry_var.trace("w", lambda *args: (self._sampling_change(*args), self._on_setting_changed()))
         
-        self.sampling_entry = StandardEntry.create(
+        sampling_field = FormField(
             sampling_section,
-            width=20,
+            "Sampling Rate (1-6000 Hz):",
+            row=0,
+            column=0,
+            entry_width=15,
+            entry_tooltip="Sampling rate in Hz (1-6000). Default: 500 Hz",
+            change_callback=self._on_setting_changed,
             textvariable=self.entry_var
         )
-        self.sampling_entry.grid(row=0, column=1, padx=10, pady=10, sticky="w")
-        ToolTip(self.sampling_entry, "Sampling rate in Hz (1-6000). Default: 500 Hz", 0, 20)
+        self.sampling_entry = sampling_field.entry
         
+        # Apply button
         self.set_up_button = StandardButton.create(
             sampling_section,
             "Apply",
@@ -181,39 +159,33 @@ class SettingsTab:
             fg_color=COLORS["primary"],
             text_color=COLORS["text_primary"]
         )
-        self.set_up_button.grid(row=0, column=2, padx=10, pady=10)
-        ToolTip(self.set_up_button, "Apply sampling rate configuration to all devices", 20, -20)
+        self.set_up_button.grid(row=0, column=2, padx=(0, 5), pady=8)
+        ToolTip(self.set_up_button, "Apply sampling rate configuration to all devices", 0, 20)
     
     def _create_path_section(self, parent: tk.Widget):
         """Create file path configuration section."""
-        path_section = tk.LabelFrame(
+        path_section = StandardSection.create(
             parent,
-            text="File Path Configuration",
-            font=FONTS["heading"],
-            bg=COLORS["background"],
-            fg=COLORS["text_primary"],
-            relief="groove",
-            padx=15,
-            pady=10
+            "File Path Configuration",
+            row=2,
+            column=0
         )
-        path_section.grid(row=2, column=0, pady=15, padx=10, sticky="ew")
         path_section.grid_columnconfigure(1, weight=1)
         
-        path_label = tk.Label(
+        # Path entry field
+        path_field = FormField(
             path_section,
-            font=FONTS["label"],
-            text="Save Path:",
-            bg=COLORS["background"],
-            fg=COLORS["text_primary"],
-            width=15,
-            anchor="w"
+            "Save Path:",
+            row=0,
+            column=0,
+            entry_width=30,
+            entry_state="readonly",
+            entry_tooltip="Directory where CSV files will be saved. Click Browse to select.",
+            change_callback=self._on_setting_changed
         )
-        path_label.grid(row=0, column=0, padx=10, pady=10, sticky="w")
+        self.path_entry = path_field.entry
         
-        self.path_entry = StandardEntry.create(path_section, width=35, state="readonly")
-        self.path_entry.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
-        ToolTip(self.path_entry, "Directory where CSV files will be saved. Click Browse to select.", 0, 20)
-        
+        # Browse button
         browse_button = StandardButton.create(
             path_section,
             "Browse",
@@ -221,36 +193,28 @@ class SettingsTab:
             fg_color=COLORS["primary"],
             text_color=COLORS["text_primary"]
         )
-        browse_button.grid(row=0, column=2, padx=5, pady=10)
+        browse_button.grid(row=0, column=2, padx=(0, 5), pady=8)
         
-        open_button = tk.Button(
+        # Open folder button
+        open_icon = self.image_loader.load_image("open_folder.png", (13, 13))
+        open_button = IconButton.create(
             path_section,
-            image=self.image_loader.load_image("open_folder.png", (13, 13)),
+            open_icon,
             command=self._open_directory,
-            relief="raised",
-            bg=COLORS["background"],
-            cursor="hand2"
+            size=(20, 20)
         )
-        open_button.grid(row=0, column=3, padx=5, pady=10)
+        open_button.grid(row=0, column=3, padx=(0, 5), pady=8)
     
     def _create_save_section(self, parent: tk.Widget):
         """Create save configuration section."""
-        save_section = tk.Frame(parent, bg=COLORS["background"])
-        save_section.grid(row=3, column=0, pady=20)
-        
         save_setting = StandardButton.create(
-            save_section,
+            parent,
             "Update Configuration",
-            lambda: update_file_json(
-                self.ix256_a_entry,
-                self.tx2_entry,
-                self.path_entry,
-                self.sampling_entry,
-            ),
+            self._save_configuration,
             fg_color=COLORS["primary"],
             text_color=COLORS["text_primary"]
         )
-        save_setting.pack()
+        save_setting.grid(row=3, column=0, pady=(0, 0))
         ToolTip(save_setting, "Save current settings to configuration file", 0, 20)
     
     def _sampling_change(self, *args):
@@ -282,6 +246,7 @@ class SettingsTab:
             self.path_entry.delete(0, tk.END)
             self.path_entry.insert(0, directory_path)
             self.path_entry.config(state="readonly")
+            self._on_setting_changed()
     
     def _open_directory(self):
         """Open the directory in the system's default file manager."""
@@ -299,3 +264,58 @@ class SettingsTab:
             except Exception as e:
                 # Error handling would be done by GUI's show_message
                 pass
+    
+    def _store_initial_values(self):
+        """Store initial values for change detection."""
+        self._initial_values = {
+            'ix256_a': self.ix256_a_entry.get(),
+            'tx2': self.tx2_entry.get(),
+            'path': self.path_entry.get(),
+            'sampling': self.sampling_entry.get(),
+        }
+    
+    def _setup_change_tracking(self):
+        """Set up change tracking for all settings."""
+        # The entry bindings are already set up in _create_device_section and _create_sampling_section
+        # Just need to check on initial load
+        self._check_for_changes()
+    
+    def _check_for_changes(self):
+        """Check if current values differ from initial values."""
+        current_values = {
+            'ix256_a': self.ix256_a_entry.get(),
+            'tx2': self.tx2_entry.get(),
+            'path': self.path_entry.get(),
+            'sampling': self.sampling_entry.get(),
+        }
+        
+        has_changes = current_values != self._initial_values
+        if has_changes != self._has_unsaved_changes:
+            self._has_unsaved_changes = has_changes
+            self._update_tab_title_indicator()
+    
+    def _on_setting_changed(self):
+        """Called when any setting changes."""
+        self._check_for_changes()
+    
+    def _update_tab_title_indicator(self):
+        """Update tab title to show/hide asterisk for unsaved changes."""
+        if self._update_tab_title:
+            if self._has_unsaved_changes:
+                self._update_tab_title("Settings *")
+            else:
+                self._update_tab_title("Settings")
+    
+    def _save_configuration(self):
+        """Save configuration and clear unsaved changes indicator."""
+        update_file_json(
+            self.ix256_a_entry,
+            self.tx2_entry,
+            self.path_entry,
+            self.sampling_entry,
+        )
+        # Update initial values to current values
+        self._store_initial_values()
+        # Clear unsaved changes indicator
+        self._has_unsaved_changes = False
+        self._update_tab_title_indicator()

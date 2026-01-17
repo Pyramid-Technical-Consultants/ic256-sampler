@@ -13,7 +13,7 @@ from .gui import GUI
 from .device_manager import DeviceManager, IC256_CONFIG, TX2_CONFIG
 from .model_collector import ModelCollector
 from .statistics_aggregator import StatisticsUpdater
-from .gui_helpers import (
+from .gui.utils import (
     safe_gui_update,
     log_message_safe,
     show_message_safe,

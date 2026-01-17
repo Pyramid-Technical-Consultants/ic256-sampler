@@ -38,50 +38,18 @@ class WindowStateManager:
             return str(package_dir / "window_state.json")
     
     def load(self) -> None:
-        """Load and apply saved window state."""
+        """Load and apply window state - starts at minimum size by default."""
         try:
-            if os.path.exists(self.state_file):
-                with open(self.state_file, 'r') as f:
-                    state = json.load(f)
-                    
-                width = state.get('width', 1000)
-                height = state.get('height', 700)
-                x = state.get('x', None)
-                y = state.get('y', None)
-                
-                # Validate dimensions
-                width = max(800, min(width, self.root.winfo_screenwidth()))
-                height = max(600, min(height, self.root.winfo_screenheight()))
-                
-                self.root.geometry(f"{width}x{height}")
-                
-                # Set position if valid
-                if x is not None and y is not None:
-                    # Ensure window is on screen
-                    screen_width = self.root.winfo_screenwidth()
-                    screen_height = self.root.winfo_screenheight()
-                    x = max(0, min(x, screen_width - width))
-                    y = max(0, min(y, screen_height - height))
-                    self.root.geometry(f"{width}x{height}+{x}+{y}")
-        except (json.JSONDecodeError, IOError, OSError, ValueError, tk.TclError):
-            # If loading fails, use default size
+            # Start at minimum window size (600x500 as defined in main.py)
+            self.root.geometry("600x500")
+        except (tk.TclError, AttributeError):
+            # If setting geometry fails, use default size
             self.root.geometry("1000x700")
     
     def save(self) -> None:
-        """Save current window state."""
-        try:
-            state = {
-                'width': self.root.winfo_width(),
-                'height': self.root.winfo_height(),
-                'x': self.root.winfo_x(),
-                'y': self.root.winfo_y()
-            }
-            
-            with open(self.state_file, 'w') as f:
-                json.dump(state, f, indent=2)
-        except (IOError, OSError, tk.TclError):
-            # Ignore errors when saving state
-            pass
+        """Save current window state - disabled (no-op)."""
+        # Window state saving is disabled - do nothing
+        pass
     
     def setup_close_handler(self, on_close: Optional[callable] = None) -> None:
         """Set up window close handler to save state.

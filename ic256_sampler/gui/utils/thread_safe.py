@@ -1,11 +1,15 @@
-"""GUI helper utilities for thread-safe updates and common operations."""
+"""Thread-safe GUI update utilities.
+
+This module provides utilities for safely updating GUI elements from background threads.
+All GUI updates must be performed on the main thread, so these functions use
+window.root.after() to schedule updates on the GUI event loop.
+"""
 
 from typing import Optional, Callable, Any
-from .gui import GUI
 
 
 def safe_gui_update(
-    window: Optional[GUI],
+    window: Optional["GUI"],  # type: ignore
     callback: Callable[[], None],
 ) -> None:
     """Safely update GUI from any thread.
@@ -19,7 +23,7 @@ def safe_gui_update(
 
 
 def log_message_safe(
-    window: Optional[GUI],
+    window: Optional["GUI"],  # type: ignore
     message: str,
     level: str = "INFO",
 ) -> None:
@@ -34,7 +38,7 @@ def log_message_safe(
 
 
 def show_message_safe(
-    window: Optional[GUI],
+    window: Optional["GUI"],  # type: ignore
     message: str,
     color: str = "black",
 ) -> None:
@@ -49,7 +53,7 @@ def show_message_safe(
 
 
 def set_button_state_safe(
-    window: Optional[GUI],
+    window: Optional["GUI"],  # type: ignore
     button_name: str,
     state: str,
     image: Optional[Any] = None,

@@ -17,7 +17,7 @@ from .io_database import IODatabase
 from .virtual_database import VirtualDatabase, ColumnDefinition
 from .csv_writer import CSVWriter
 from .file_path_generator import get_file_path_for_primary_device
-from .gui_helpers import log_message_safe
+from .gui.utils import log_message_safe
 
 
 class ModelCollector:
@@ -63,6 +63,7 @@ class ModelCollector:
         self.file_path = file_path
         self.device_name = device_name
         self.note = note
+        self.log_callback = log_callback
         
         # Use shared IODatabase from DeviceManager
         self.io_database = device_manager.get_io_database()
@@ -116,7 +117,7 @@ class ModelCollector:
         1. Rebuilds VirtualDatabase with new data from shared IODatabase
         2. Writes new rows to CSV
         3. Updates statistics
-        4. Prunes old rows if safe
+        4. Prunes old data from IODatabase if safe to prevent unbounded growth
         
         Note: Data collection from devices happens in DeviceManager threads.
         This method only processes the collected data.
@@ -149,6 +150,32 @@ class ModelCollector:
             self.csv_writer.flush()
         if self.csv_writer.rows_written % 5000 == 0:
             self.csv_writer.sync()
+        
+        # STEP 5: Prune old data from IODatabase to prevent unbounded growth
+        # Only prune if we have a significant amount of data and have written rows
+        # Check every 1000 rows written to avoid overhead
+        if self.csv_writer.rows_written > 0 and self.csv_writer.rows_written % 1000 == 0:
+            # Get the last built time from virtual database (what's been processed)
+            # Use a safety margin of 1 second to ensure we don't prune data that might be needed
+            last_built_time = self.virtual_database._last_built_time
+            if last_built_time is not None and last_built_time > 1.0:
+                # Prune data older than (last_built_time - 1 second safety margin)
+                # This ensures we keep a small buffer of data that might be needed for interpolation
+                prune_before_time = max(0.0, last_built_time - 1.0)
+                pruned_counts = self.io_database.prune_old_data(
+                    min_elapsed_time=prune_before_time,
+                    max_points_per_channel=100000
+                )
+                
+                # Log if significant pruning occurred (only log if > 1000 points pruned total)
+                total_pruned = sum(pruned_counts.values())
+                if total_pruned > 1000:
+                    if self.log_callback:
+                        self.log_callback(
+                            f"Pruned {total_pruned:,} old data points from IODatabase "
+                            f"(pruned before {prune_before_time:.3f}s elapsed time)",
+                            "INFO"
+                        )
         
     
     def stop(self) -> None:

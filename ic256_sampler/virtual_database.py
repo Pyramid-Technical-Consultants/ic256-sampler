@@ -109,6 +109,9 @@ class VirtualDatabase:
         
         # Performance optimization: cache reference channel data
         self._ref_channel_cache: Optional[ChannelData] = None
+        
+        # Track channels that have been warned about large snapshots to reduce log spam
+        self._snapshot_warning_counts: Dict[str, int] = {}
     
     def get_headers(self) -> List[str]:
         """Get CSV header names for all columns.
@@ -204,13 +207,20 @@ class VirtualDatabase:
                     # Create snapshot with size limit
                     if channel_data.count > max_snapshot_size:
                         snapshot = list(channel_data.data_points)[-max_snapshot_size:]
-                        self._log(
-                            f"Channel {col_def.channel_path} has {channel_data.count} points, "
-                            f"limiting snapshot to {max_snapshot_size} most recent points",
-                            "WARNING"
-                        )
+                        # Only warn periodically to reduce log spam (every 50 rebuilds or first time)
+                        warning_count = self._snapshot_warning_counts.get(col_def.channel_path, 0)
+                        if warning_count == 0 or warning_count % 50 == 0:
+                            self._log(
+                                f"Channel {col_def.channel_path} has {channel_data.count} points, "
+                                f"limiting snapshot to {max_snapshot_size} most recent points",
+                                "WARNING"
+                            )
+                        self._snapshot_warning_counts[col_def.channel_path] = warning_count + 1
                     else:
                         snapshot = list(channel_data.data_points)
+                        # Reset warning count if channel is back to normal size
+                        if col_def.channel_path in self._snapshot_warning_counts:
+                            del self._snapshot_warning_counts[col_def.channel_path]
                     
                     # Filter by time if needed (for incremental rebuild)
                     if snapshot_start_time is not None and channel_data.count > 1000:
@@ -233,13 +243,22 @@ class VirtualDatabase:
         
         if ref_channel.count > max_snapshot_size:
             ref_snapshot = list(ref_channel.data_points)[-max_snapshot_size:]
-            self._log(
-                f"Reference channel has {ref_channel.count} points, "
-                f"limiting snapshot to {max_snapshot_size} most recent points",
-                "WARNING"
-            )
+            # Only warn periodically to reduce log spam (every 50 rebuilds or first time)
+            ref_warning_key = "__REFERENCE_CHANNEL__"
+            warning_count = self._snapshot_warning_counts.get(ref_warning_key, 0)
+            if warning_count == 0 or warning_count % 50 == 0:
+                self._log(
+                    f"Reference channel has {ref_channel.count} points, "
+                    f"limiting snapshot to {max_snapshot_size} most recent points",
+                    "WARNING"
+                )
+            self._snapshot_warning_counts[ref_warning_key] = warning_count + 1
         else:
             ref_snapshot = list(ref_channel.data_points)
+            # Reset warning count if reference channel is back to normal size
+            ref_warning_key = "__REFERENCE_CHANNEL__"
+            if ref_warning_key in self._snapshot_warning_counts:
+                del self._snapshot_warning_counts[ref_warning_key]
         
         # Filter reference channel by time if needed
         if snapshot_start_time is not None and ref_channel.count > 1000:
@@ -852,6 +871,7 @@ class VirtualDatabase:
         self._built = False
         self._last_built_time = None
         self._ref_channel_cache = None
+        self._snapshot_warning_counts.clear()
     
     def rebuild(self) -> None:
         """Rebuild the virtual database from the IO database.

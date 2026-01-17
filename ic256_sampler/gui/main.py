@@ -31,7 +31,11 @@ class GUI:
         self.root = tk.Tk()
         self.root.title(name)
         self.root.resizable(True, True)
-        self.root.minsize(800, 600)
+        # Minimum size calculated based on layout requirements:
+        # Width: Settings tab needs ~550px (label 150px + entry 214px + icon 20px + buttons + padding 166px)
+        # Height: Settings tab needs ~380px (3 fieldsets ~240px + button ~50px + spacing ~45px + padding ~40px + status bar 30px)
+        # Adding small buffer for window chrome
+        self.root.minsize(600, 420)
         
         # Set system background color
         self.root.configure(bg=COLORS["background"])
@@ -57,10 +61,11 @@ class GUI:
     
     def _load_images(self):
         """Load commonly used images."""
+        # Use consistent 20x20 size for all status icons to prevent button resizing
         self.fail_image = self.image_loader.load_image("fail.png", (20, 20))
-        self.loading_image = self.image_loader.load_image("loading.png", (15, 15))
+        self.loading_image = self.image_loader.load_image("loading.png", (20, 20))
         self.pass_image = self.image_loader.load_image("pass.png", (20, 20))
-        self.search_image = self.image_loader.load_image("search.png", (13, 13))
+        self.search_image = self.image_loader.load_image("search.png", (20, 20))
         self.open_folder_image = self.image_loader.load_image("open_folder.png", (13, 13))
     
     def _ensure_data_directory(self):
@@ -170,19 +175,27 @@ class GUI:
         
         # Create tabs
         main_tab_frame = ttk.Frame(self.tab)
+        main_tab_frame.grid_rowconfigure(0, weight=1)
+        main_tab_frame.grid_columnconfigure(0, weight=1)
         self.tab.add(main_tab_frame, text="Main")
         self.main_tab = MainTab(main_tab_frame, self.start, self.stop, self.image_loader)
         
         settings_tab_frame = ttk.Frame(self.tab)
+        settings_tab_frame.grid_rowconfigure(0, weight=1)
+        settings_tab_frame.grid_columnconfigure(0, weight=1)
         self.tab.add(settings_tab_frame, text="Settings")
+        settings_tab_index = self.tab.index(settings_tab_frame)
         self.setting_tab = SettingsTab(
             settings_tab_frame,
             self.set_up_device,
             self.image_loader,
-            self._update_icon_threaded
+            self._update_icon_threaded,
+            lambda text: self.tab.tab(settings_tab_index, text=text)
         )
         
         log_tab_frame = ttk.Frame(self.tab)
+        log_tab_frame.grid_rowconfigure(0, weight=1)
+        log_tab_frame.grid_columnconfigure(0, weight=1)
         self.tab.add(log_tab_frame, text="Log")
         self.log_tab = LogTab(log_tab_frame, self.show_message)
         
@@ -198,7 +211,7 @@ class GUI:
     def _create_connection_status(self, parent: tk.Widget):
         """Create connection status indicator."""
         connection_frame = tk.Frame(parent, bg=COLORS["background"])
-        connection_frame.grid(row=0, column=0, sticky="w", padx=(10, 15), pady=5)
+        connection_frame.grid(row=0, column=0, sticky="w", padx=(10, 15))
         
         self.connection_status_label = tk.Label(
             connection_frame,
@@ -232,6 +245,7 @@ class GUI:
         )
         message_frame.grid(row=1, column=0, sticky="ew")
         message_frame.grid_propagate(False)
+        message_frame.grid_rowconfigure(0, weight=1)  # Center content vertically
         message_frame.grid_columnconfigure(1, weight=1)  # Message column expands
         
         # Connection status (left)
@@ -246,7 +260,7 @@ class GUI:
             fg=COLORS["text_primary"],
             wraplength=400
         )
-        self.message_text.grid(row=0, column=1, sticky="ew", padx=10, pady=5)
+        self.message_text.grid(row=0, column=1, sticky="ew", padx=10)
         
         # Date/time (right)
         self._render_date_time(message_frame)
@@ -265,7 +279,7 @@ class GUI:
             fg=COLORS["text_secondary"],
             bg=COLORS["background"]
         )
-        self.display_time.grid(row=0, column=2, sticky="e", padx=(10, 15), pady=5)
+        self.display_time.grid(row=0, column=2, sticky="e", padx=(10, 15))
         self.update_date_time()
     
     def _on_tab_click(self, event):

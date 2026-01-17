@@ -4,7 +4,15 @@ import tkinter as tk
 from typing import Callable, Optional
 
 from ..styles import COLORS, FONTS
-from ..components import StandardButton, ToolTip, EntryWithPlaceholder
+from ..components import (
+    StandardButton,
+    StandardSection,
+    ScrollableFrame,
+    ButtonGroup,
+    LabelValuePair,
+    ToolTip,
+    EntryWithPlaceholder,
+)
 
 
 class MainTab:
@@ -34,8 +42,9 @@ class MainTab:
         self.parent.grid_rowconfigure(0, weight=1)
         self.parent.grid_columnconfigure(0, weight=1)
         
-        # Main container
-        main_container = tk.Frame(self.parent, bg=COLORS["background"])
+        # Create scrollable frame
+        scrollable = ScrollableFrame(self.parent)
+        main_container = scrollable.get_frame()
         main_container.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
         main_container.grid_columnconfigure(0, weight=1)
         
@@ -53,41 +62,36 @@ class MainTab:
     
     def _create_note_section(self, parent: tk.Widget):
         """Create note input section."""
-        note_label = tk.Label(
+        note_section = StandardSection.create(
             parent,
-            font=FONTS["label"],
-            text="Note:",
-            bg=COLORS["background"],
-            fg=COLORS["text_primary"],
-            anchor="w"
+            "Session Note",
+            row=0,
+            column=0
         )
-        note_label.grid(row=0, column=0, sticky="w", pady=(0, 5))
+        note_section.grid_columnconfigure(0, weight=1)
         
         note_placeholder = EntryWithPlaceholder(
-            parent,
+            note_section,
             "Enter a note for this data collection session...",
             width=50,
             font=FONTS["entry_large"]
         )
         self.note_entry_wrapper = note_placeholder
         self.note_entry = note_placeholder.get_widget()
-        self.note_entry.grid(row=1, column=0, sticky="ew", pady=(0, 15))
-        parent.grid_columnconfigure(0, weight=1)
+        self.note_entry.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
         ToolTip(self.note_entry, "Optional note to include in the CSV file name and metadata", 0, 20)
     
     def _create_time_section(self, parent: tk.Widget):
         """Create elapsed time display section."""
-        time_label = tk.Label(
+        time_section = StandardSection.create(
             parent,
-            font=FONTS["label"],
-            text="Elapsed Time:",
-            bg=COLORS["background"],
-            fg=COLORS["text_primary"]
+            "Elapsed Time",
+            row=1,
+            column=0
         )
-        time_label.grid(row=2, column=0, sticky="w", pady=(0, 5))
         
-        time_display_frame = tk.Frame(parent, bg=COLORS["background"])
-        time_display_frame.grid(row=3, column=0, pady=(0, 15))
+        time_display_frame = tk.Frame(time_section, bg=COLORS["background"])
+        time_display_frame.grid(row=0, column=0, padx=5, pady=5)
         
         self.minute = tk.Label(
             time_display_frame,
@@ -139,86 +143,49 @@ class MainTab:
     
     def _create_statistics_section(self, parent: tk.Widget):
         """Create statistics display section."""
-        stats_label = tk.Label(
+        stats_section = StandardSection.create(
             parent,
-            font=FONTS["label"],
-            text="Statistics:",
-            bg=COLORS["background"],
-            fg=COLORS["text_primary"],
-            anchor="w"
+            "Statistics",
+            row=2,
+            column=0
         )
-        stats_label.grid(row=4, column=0, sticky="w", pady=(0, 5))
         
         # Statistics container
-        stats_container = tk.Frame(parent, bg=COLORS["background"])
-        stats_container.grid(row=5, column=0, sticky="w", pady=(0, 15))
+        stats_container = tk.Frame(stats_section, bg=COLORS["background"])
+        stats_container.grid(row=0, column=0, padx=5, pady=5, sticky="w")
         
         # Rows display
-        rows_frame = tk.Frame(stats_container, bg=COLORS["background"])
-        rows_frame.grid(row=0, column=0, padx=(0, 30))
-        
-        rows_title = tk.Label(
-            rows_frame,
-            font=FONTS["label_small"],
-            text="Rows:",
-            bg=COLORS["background"],
-            fg=COLORS["text_secondary"]
+        self.rows_pair = LabelValuePair(
+            stats_container,
+            "Rows:",
+            initial_value="0",
+            row=0,
+            column=0,
+            spacing=5
         )
-        rows_title.grid(row=0, column=0, padx=(0, 5))
-        
-        self.rows_label = tk.Label(
-            rows_frame,
-            font=FONTS["label_medium"],
-            text="0",
-            bg=COLORS["background"],
-            fg=COLORS["text_primary"]
-        )
-        self.rows_label.grid(row=0, column=1)
+        self.rows_label = self.rows_pair.value
         
         # File size display
-        size_frame = tk.Frame(stats_container, bg=COLORS["background"])
-        size_frame.grid(row=0, column=1)
-        
-        size_title = tk.Label(
-            size_frame,
-            font=FONTS["label_small"],
-            text="File Size:",
-            bg=COLORS["background"],
-            fg=COLORS["text_secondary"]
+        self.size_pair = LabelValuePair(
+            stats_container,
+            "File Size:",
+            initial_value="0 B",
+            row=0,
+            column=2,
+            spacing=5
         )
-        size_title.grid(row=0, column=0, padx=(0, 5))
-        
-        self.file_size_label = tk.Label(
-            size_frame,
-            font=FONTS["label_medium"],
-            text="0 B",
-            bg=COLORS["background"],
-            fg=COLORS["text_primary"]
-        )
-        self.file_size_label.grid(row=0, column=1)
+        self.file_size_label = self.size_pair.value
     
     def _create_button_section(self, parent: tk.Widget):
         """Create button section."""
-        button_container = tk.Frame(parent, bg=COLORS["background"])
-        button_container.grid(row=6, column=0, pady=(10, 0))
-        
-        self.start_button = StandardButton.create(
-            button_container,
-            "Start",
-            self.start_callback,
-            fg_color=COLORS["primary"],
-            text_color=COLORS["text_primary"]
+        button_group = ButtonGroup(
+            parent,
+            [("Start", self.start_callback), ("Stop", self.stop_callback)],
+            row=3,
+            column=0
         )
-        self.start_button.grid(row=0, column=0, padx=(0, 10))
-        
-        self.stop_button = StandardButton.create(
-            button_container,
-            "Stop",
-            self.stop_callback,
-            fg_color=COLORS["primary"],
-            text_color=COLORS["text_primary"]
-        )
-        self.stop_button.grid(row=0, column=1)
+        self.start_button = button_group.get_button(0)
+        self.stop_button = button_group.get_button(1)
         self.stop_button.config(state="disabled")
     
     def get_note_value(self) -> str:

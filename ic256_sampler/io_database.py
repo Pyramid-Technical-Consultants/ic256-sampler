@@ -182,6 +182,51 @@ class ChannelData:
         
         return closest
     
+    def prune_old_points(self, min_elapsed_time: float) -> int:
+        """Prune data points older than the specified elapsed time.
+        
+        Removes points from the beginning of the deque that have elapsed_time
+        less than min_elapsed_time. This helps prevent unbounded memory growth.
+        
+        Args:
+            min_elapsed_time: Minimum elapsed time to keep (seconds)
+            
+        Returns:
+            Number of points pruned
+        """
+        if not self.data_points or self.count == 0:
+            return 0
+        
+        # Use popleft() in a loop instead of iterating to avoid mutation during iteration
+        # Points are ordered by elapsed_time, so we can safely remove from the front
+        points_to_remove = 0
+        
+        # Remove points from the beginning until we find one that's >= min_elapsed_time
+        while self.data_points:
+            # Peek at the first point without removing it yet
+            first_point = self.data_points[0]
+            if first_point.elapsed_time < min_elapsed_time:
+                # Safe to remove - it's too old
+                self.data_points.popleft()
+                points_to_remove += 1
+            else:
+                # First point is new enough, so all remaining points are too
+                break
+        
+        if points_to_remove > 0:
+            self.count -= points_to_remove
+            
+            # Update first_timestamp if we removed all points
+            if self.count == 0:
+                self.first_timestamp = None
+                self.last_timestamp = None
+            elif self.data_points:
+                # Update first_timestamp to the new first point
+                first_point = self.data_points[0]
+                self.first_timestamp = first_point.timestamp_ns
+        
+        return points_to_remove
+    
     def get_statistics(self) -> Dict[str, Any]:
         """Get statistics for this channel.
         
@@ -370,3 +415,48 @@ class IODatabase:
             Total number of data points
         """
         return sum(channel.count for channel in self.channels.values())
+    
+    def prune_old_data(self, min_elapsed_time: float, max_points_per_channel: int = 100000) -> Dict[str, int]:
+        """Prune old data points from all channels.
+        
+        This method:
+        1. Prunes points older than min_elapsed_time from each channel
+        2. If a channel still has more than max_points_per_channel points,
+           keeps only the most recent max_points_per_channel points
+           
+        Args:
+            min_elapsed_time: Minimum elapsed time to keep (seconds)
+            max_points_per_channel: Maximum points to keep per channel (default: 100000)
+            
+        Returns:
+            Dictionary mapping channel paths to number of points pruned
+        """
+        pruned_counts = {}
+        
+        for channel_path, channel_data in self.channels.items():
+            total_pruned = 0
+            
+            # First, prune by elapsed time
+            pruned_by_time = channel_data.prune_old_points(min_elapsed_time)
+            total_pruned += pruned_by_time
+            
+            # Then, if still too many points, keep only the most recent ones
+            if channel_data.count > max_points_per_channel:
+                points_to_remove = channel_data.count - max_points_per_channel
+                for _ in range(points_to_remove):
+                    channel_data.data_points.popleft()
+                channel_data.count -= points_to_remove
+                total_pruned += points_to_remove
+                
+                # Update first_timestamp
+                if channel_data.data_points:
+                    first_point = channel_data.data_points[0]
+                    channel_data.first_timestamp = first_point.timestamp_ns
+                else:
+                    channel_data.first_timestamp = None
+                    channel_data.last_timestamp = None
+            
+            if total_pruned > 0:
+                pruned_counts[channel_path] = total_pruned
+        
+        return pruned_counts

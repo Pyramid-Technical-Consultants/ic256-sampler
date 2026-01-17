@@ -6,7 +6,7 @@ from tkinter import filedialog
 from typing import Optional
 
 from ..styles import COLORS, FONTS
-from ..components import StandardButton, StandardEntry, ToolTip
+from ..components import StandardButton, StandardEntry, StandardLabel, ButtonGroup, ToolTip
 
 
 class LogTab:
@@ -42,27 +42,26 @@ class LogTab:
     def _create_search_section(self):
         """Create search section."""
         search_frame = tk.Frame(self.parent, bg=COLORS["background"])
-        search_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        search_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(20, 10))
         search_frame.grid_columnconfigure(1, weight=1)
         
-        search_label = tk.Label(
+        search_label = StandardLabel.create(
             search_frame,
-            text="Search:",
-            font=FONTS["label_small"],
-            bg=COLORS["background"],
-            fg=COLORS["text_primary"]
+            "Search:",
+            font_key="label",
+            anchor="w"
         )
-        search_label.grid(row=0, column=0, padx=(0, 5), sticky="w")
+        search_label.grid(row=0, column=0, padx=(0, 10), sticky="w")
         
-        self.log_search_entry = StandardEntry.create(search_frame)
-        self.log_search_entry.grid(row=0, column=1, sticky="ew", padx=5)
+        self.log_search_entry = StandardEntry.create(search_frame, width=40)
+        self.log_search_entry.grid(row=0, column=1, sticky="ew", padx=(0, 0))
         self.log_search_entry.bind('<KeyRelease>', self._filter_log)
         ToolTip(self.log_search_entry, "Search log entries (Ctrl+F to focus)", 0, 20)
     
     def _create_log_display(self):
         """Create log text display."""
         log_frame = tk.Frame(self.parent, bg=COLORS["background"])
-        log_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+        log_frame.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 10))
         log_frame.grid_rowconfigure(0, weight=1)
         log_frame.grid_columnconfigure(0, weight=1)
         
@@ -98,35 +97,17 @@ class LogTab:
     
     def _create_action_buttons(self):
         """Create action buttons."""
-        button_frame = tk.Frame(self.parent, bg=COLORS["background"])
-        button_frame.grid(row=2, column=0, pady=10)
-        
-        clear_button = StandardButton.create(
-            button_frame,
-            "Clear Log",
-            self.clear_log,
-            fg_color=COLORS["primary"],
-            text_color=COLORS["text_primary"]
+        button_group = ButtonGroup(
+            self.parent,
+            [
+                ("Clear Log", self.clear_log),
+                ("Export Log", self._export_log),
+                ("Copy Selected", self._copy_log_selection),
+            ],
+            row=2,
+            column=0,
+            pady=(0, 20)
         )
-        clear_button.pack(side=tk.LEFT, padx=5)
-        
-        export_button = StandardButton.create(
-            button_frame,
-            "Export Log",
-            self._export_log,
-            fg_color=COLORS["primary"],
-            text_color=COLORS["text_primary"]
-        )
-        export_button.pack(side=tk.LEFT, padx=5)
-        
-        copy_button = StandardButton.create(
-            button_frame,
-            "Copy Selected",
-            self._copy_log_selection,
-            fg_color=COLORS["primary"],
-            text_color=COLORS["text_primary"]
-        )
-        copy_button.pack(side=tk.LEFT, padx=5)
     
     def log_message(self, message: str, level: str = "INFO"):
         """Add a message to the log tab with timestamp.
