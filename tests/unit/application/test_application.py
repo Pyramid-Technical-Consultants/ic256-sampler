@@ -430,10 +430,30 @@ class TestApplication:
             collector.statistics = {}
         
         def model_collector_side_effect(*args, **kwargs):
+            # Initialize device_statistics (this is what the real create_for_collection does)
+            # Args: device_manager, devices_added, sampling_rate, save_folder, note, device_statistics, log_callback
+            if len(args) >= 6:
+                device_statistics = args[5]
+                devices_added = args[1]
+            else:
+                device_statistics = kwargs.get('device_statistics', {})
+                devices_added = kwargs.get('devices_added', [])
+            
+            if device_statistics is not None:
+                device_statistics.clear()
+                if devices_added:
+                    device_statistics.update({
+                        device: {"rows": 0, "file_size": 0, "file_path": ""} 
+                        for device in devices_added
+                    })
+            
             # Return a new collector instance for each call
             idx = len([c for c in mock_collectors if hasattr(c, '_used')])
             if idx < len(mock_collectors):
                 mock_collectors[idx]._used = True
+                # Set statistics reference on collector
+                if device_statistics and devices_added:
+                    mock_collectors[idx].statistics = device_statistics.get(devices_added[0], {})
                 return mock_collectors[idx]
             return Mock()
         
@@ -442,7 +462,8 @@ class TestApplication:
              patch('ic256_sampler.application.show_message_safe') as mock_show, \
              patch('ic256_sampler.application.log_message_safe') as mock_log, \
              patch('ic256_sampler.file_path_generator.get_timestamp_strings', side_effect=[("20240101", "120000"), ("20240101", "120100"), ("20240101", "120200")]), \
-             patch('ic256_sampler.application.ModelCollector', side_effect=model_collector_side_effect), \
+             patch('ic256_sampler.model_collector.ModelCollector.get_devices_added', return_value=[IC256_CONFIG.device_name]), \
+             patch('ic256_sampler.model_collector.ModelCollector.create_for_collection', side_effect=model_collector_side_effect), \
              patch('ic256_sampler.model_collector.collect_data_with_model') as mock_collect_data, \
              patch('threading.Thread') as mock_thread_class:
             
@@ -595,7 +616,8 @@ class TestApplication:
              patch('ic256_sampler.application.show_message_safe'), \
              patch('ic256_sampler.application.log_message_safe'), \
              patch('ic256_sampler.file_path_generator.get_timestamp_strings', return_value=("20240101", "120000")), \
-             patch('ic256_sampler.application.ModelCollector') as mock_collector_class, \
+             patch('ic256_sampler.model_collector.ModelCollector.get_devices_added', return_value=[IC256_CONFIG.device_name]), \
+             patch('ic256_sampler.model_collector.ModelCollector.create_for_collection', return_value=Mock()), \
              patch('ic256_sampler.model_collector.collect_data_with_model'), \
              patch('threading.Thread'):
             

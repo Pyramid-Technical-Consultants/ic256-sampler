@@ -291,6 +291,10 @@ class Application:
     
     def _stop_previous_threads(self) -> None:
         """Stop any previous collection threads before starting new acquisition."""
+        # Stop device manager to reset _running state before new acquisition
+        if self.device_manager:
+            self.device_manager.stop()
+        
         # Stop previous statistics thread if running
         if self.stats_thread and self.stats_thread.is_alive():
             # Use a separate flag to stop stats thread without affecting collection
