@@ -3,8 +3,112 @@ import pytest
 import threading
 import time
 from unittest.mock import Mock, MagicMock, patch, PropertyMock
+from typing import Optional
 from ic256_sampler.application import Application, DEFAULT_SAMPLING_RATE, MIN_SAMPLING_RATE, MAX_SAMPLING_RATE
 from ic256_sampler.device_manager import DeviceManager, IC256_CONFIG, TX2_CONFIG
+
+
+# Test helper functions
+def create_mock_window(
+    ic256_ip: str = "192.168.1.100",
+    tx2_ip: str = "",
+    note: str = "Test Note",
+    save_path: str = "/test/path",
+    sampling_rate: str = "500"
+) -> Mock:
+    """Create a mock GUI window with configurable values.
+    
+    Args:
+        ic256_ip: IC256 IP address
+        tx2_ip: TX2 IP address
+        note: Note string
+        save_path: Save path
+        sampling_rate: Sampling rate as string
+        
+    Returns:
+        Mock window object
+    """
+    mock_window = Mock()
+    mock_window.ix256_a_entry = Mock()
+    mock_window.ix256_a_entry.get = Mock(return_value=ic256_ip)
+    mock_window.tx2_entry = Mock()
+    mock_window.tx2_entry.get = Mock(return_value=tx2_ip)
+    mock_window.note_entry = Mock()
+    mock_window.note_entry.get = Mock(return_value=note)
+    mock_window.path_entry = Mock()
+    mock_window.path_entry.get = Mock(return_value=save_path)
+    mock_window.sampling_entry = Mock()
+    mock_window.sampling_entry.get = Mock(return_value=sampling_rate)
+    mock_window.root = Mock()
+    mock_window.root.after = Mock()
+    mock_window.reset_elapse_time = Mock()
+    mock_window.reset_statistics = Mock()
+    mock_window.update_statistics = Mock()
+    return mock_window
+
+
+def create_app_with_window(
+    ic256_ip: str = "192.168.1.100",
+    tx2_ip: str = "",
+    note: str = "Test Note",
+    save_path: str = "/test/path",
+    sampling_rate: str = "500"
+) -> Application:
+    """Create an Application instance with a mock window.
+    
+    Args:
+        ic256_ip: IC256 IP address
+        tx2_ip: TX2 IP address
+        note: Note string
+        save_path: Save path
+        sampling_rate: Sampling rate as string
+        
+    Returns:
+        Application instance with mock window
+    """
+    app = Application()
+    app.window = create_mock_window(ic256_ip, tx2_ip, note, save_path, sampling_rate)
+    return app
+
+
+def create_mock_device_manager_with_connection(
+    device_name: str = IC256_CONFIG.device_name,
+    ip_address: str = "192.168.1.100"
+) -> tuple[DeviceManager, Mock]:
+    """Create a DeviceManager with a mock connection.
+    
+    Args:
+        device_name: Device name
+        ip_address: IP address
+        
+    Returns:
+        Tuple of (DeviceManager, mock_connection)
+    """
+    device_manager = DeviceManager()
+    mock_connection = Mock()
+    mock_connection.ip_address = ip_address
+    mock_connection.thread = Mock()
+    mock_connection.thread.is_alive = Mock(return_value=False)
+    mock_connection.model = Mock()
+    mock_connection.model.setup_device = Mock()
+    mock_connection.config = IC256_CONFIG if device_name == IC256_CONFIG.device_name else TX2_CONFIG
+    mock_connection.client = Mock()
+    mock_connection.channels = {}
+    mock_connection.field_to_path = {}
+    device_manager.connections[device_name] = mock_connection
+    return device_manager, mock_connection
+
+
+@pytest.fixture
+def common_patches():
+    """Fixture providing common patches for application tests."""
+    return patch.multiple(
+        'ic256_sampler.application',
+        safe_gui_update=Mock(),
+        set_button_state_safe=Mock(),
+        show_message_safe=Mock(),
+        log_message_safe=Mock()
+    )
 
 
 class TestApplication:
@@ -31,18 +135,12 @@ class TestApplication:
     
     def test_get_gui_values_with_window(self):
         """Test _get_gui_values when window exists."""
-        app = Application()
-        mock_window = Mock()
-        mock_window.ix256_a_entry = Mock()
-        mock_window.ix256_a_entry.get = Mock(return_value="192.168.1.100")
-        mock_window.tx2_entry = Mock()
-        mock_window.tx2_entry.get = Mock(return_value="192.168.1.101")
-        mock_window.note_entry = Mock()
-        mock_window.note_entry.get = Mock(return_value="Test Note")
-        mock_window.path_entry = Mock()
-        mock_window.path_entry.get = Mock(return_value="/test/path")
-        
-        app.window = mock_window
+        app = create_app_with_window(
+            ic256_ip="192.168.1.100",
+            tx2_ip="192.168.1.101",
+            note="Test Note",
+            save_path="/test/path"
+        )
         result = app._get_gui_values()
         assert result == ("192.168.1.100", "192.168.1.101", "Test Note", "/test/path")
     
@@ -120,19 +218,7 @@ class TestApplication:
     
     def test_ensure_connections_creates_device_manager(self):
         """Test _ensure_connections creates device manager when needed."""
-        app = Application()
-        mock_window = Mock()
-        mock_window.ix256_a_entry = Mock()
-        mock_window.ix256_a_entry.get = Mock(return_value="192.168.1.100")
-        mock_window.tx2_entry = Mock()
-        mock_window.tx2_entry.get = Mock(return_value="")
-        mock_window.note_entry = Mock()
-        mock_window.note_entry.get = Mock(return_value="")
-        mock_window.path_entry = Mock()
-        mock_window.path_entry.get = Mock(return_value="")
-        mock_window.sampling_entry = Mock()
-        mock_window.sampling_entry.get = Mock(return_value="500")
-        app.window = mock_window
+        app = create_app_with_window(ic256_ip="192.168.1.100", note="", save_path="")
         
         with patch('ic256_sampler.device_manager.is_valid_device', return_value=True), \
              patch('ic256_sampler.device_manager.IGXWebsocketClient') as mock_client_class, \
@@ -228,13 +314,11 @@ class TestApplication:
     
     def test_log_callback(self):
         """Test _log_callback."""
-        app = Application()
-        mock_window = Mock()
-        app.window = mock_window
+        app = create_app_with_window()
         
         with patch('ic256_sampler.application.log_message_safe') as mock_log:
             app._log_callback("Test message", "INFO")
-            mock_log.assert_called_once_with(mock_window, "Test message", "INFO")
+            mock_log.assert_called_once_with(app.window, "Test message", "INFO")
     
     def test_start_collection_no_window(self):
         """Test start_collection when window is None."""
@@ -243,9 +327,7 @@ class TestApplication:
     
     def test_start_collection_with_window(self):
         """Test start_collection creates background thread."""
-        app = Application()
-        mock_window = Mock()
-        app.window = mock_window
+        app = create_app_with_window()
         
         with patch('ic256_sampler.application.set_button_state_safe') as mock_set_button, \
              patch('ic256_sampler.application.show_message_safe') as mock_show_message, \
@@ -255,7 +337,7 @@ class TestApplication:
             
             app.start_collection()
             
-            mock_set_button.assert_called_once_with(mock_window, "start_button", "disabled")
+            mock_set_button.assert_called_once_with(app.window, "start_button", "disabled")
             mock_show_message.assert_called_once()
             mock_thread_class.assert_called_once()
             mock_thread.start.assert_called_once()
@@ -267,11 +349,7 @@ class TestApplication:
     
     def test_stop_collection_with_resources(self):
         """Test stop_collection stops resources."""
-        app = Application()
-        mock_window = Mock()
-        mock_window.root = Mock()
-        mock_window.root.after = Mock()
-        app.window = mock_window
+        app = create_app_with_window()
         
         mock_device_manager = Mock()
         mock_collector = Mock()
@@ -295,7 +373,7 @@ class TestApplication:
             mock_show.assert_called()
             mock_log.assert_called()
             # _check_collector_thread_finished should be called via root.after
-            mock_window.root.after.assert_called()
+            app.window.root.after.assert_called()
     
     def test_setup_devices_creates_thread(self):
         """Test setup_devices creates background thread."""
@@ -343,28 +421,13 @@ class TestApplication:
     
     def test_ensure_connections_updates_on_ip_change(self):
         """Test _ensure_connections updates connection when IP changes."""
-        app = Application()
-        mock_window = Mock()
-        mock_window.ix256_a_entry = Mock()
-        mock_window.ix256_a_entry.get = Mock(return_value="192.168.1.200")  # New IP
-        mock_window.tx2_entry = Mock()
-        mock_window.tx2_entry.get = Mock(return_value="")
-        mock_window.note_entry = Mock()
-        mock_window.note_entry.get = Mock(return_value="")
-        mock_window.path_entry = Mock()
-        mock_window.path_entry.get = Mock(return_value="")
-        mock_window.sampling_entry = Mock()
-        mock_window.sampling_entry.get = Mock(return_value="500")
-        app.window = mock_window
+        app = create_app_with_window(ic256_ip="192.168.1.200", note="", save_path="")
         
         # Create device manager with existing connection (old IP)
-        app.device_manager = DeviceManager()
-        mock_old_connection = Mock()
-        mock_old_connection.ip_address = "192.168.1.100"  # Old IP
-        mock_old_connection.thread = Mock()
-        mock_old_connection.thread.is_alive = Mock(return_value=False)
-        mock_old_connection.client = Mock()
-        app.device_manager.connections[IC256_CONFIG.device_name] = mock_old_connection
+        app.device_manager, mock_old_connection = create_mock_device_manager_with_connection(
+            device_name=IC256_CONFIG.device_name,
+            ip_address="192.168.1.100"  # Old IP
+        )
         
         with patch('ic256_sampler.device_manager.is_valid_device', return_value=True), \
              patch('ic256_sampler.application.log_message_safe'), \
@@ -390,37 +453,17 @@ class TestApplication:
         2. Second acquisition: start -> stop -> complete
         Verifies that state is properly reset between acquisitions.
         """
-        app = Application()
-        mock_window = Mock()
-        mock_window.ix256_a_entry = Mock()
-        mock_window.ix256_a_entry.get = Mock(return_value="192.168.1.100")
-        mock_window.tx2_entry = Mock()
-        mock_window.tx2_entry.get = Mock(return_value="")
-        mock_window.note_entry = Mock()
-        mock_window.note_entry.get = Mock(return_value="Test Note")
-        mock_window.path_entry = Mock()
-        mock_window.path_entry.get = Mock(return_value="/test/path")
-        mock_window.sampling_entry = Mock()
-        mock_window.sampling_entry.get = Mock(return_value="500")
-        mock_window.root = Mock()
-        mock_window.root.after = Mock()
-        mock_window.reset_elapse_time = Mock()
-        mock_window.reset_statistics = Mock()
-        app.window = mock_window
+        app = create_app_with_window(
+            ic256_ip="192.168.1.100",
+            note="Test Note",
+            save_path="/test/path"
+        )
         
         # Setup device manager with a connection
-        app.device_manager = DeviceManager()
-        mock_connection = Mock()
-        mock_connection.ip_address = "192.168.1.100"
-        mock_connection.thread = Mock()
-        mock_connection.thread.is_alive = Mock(return_value=False)
-        mock_connection.model = Mock()
-        mock_connection.model.setup_device = Mock()
-        mock_connection.config = IC256_CONFIG
-        mock_connection.client = Mock()
-        mock_connection.channels = {}
-        mock_connection.field_to_path = {}
-        app.device_manager.connections[IC256_CONFIG.device_name] = mock_connection
+        app.device_manager, mock_connection = create_mock_device_manager_with_connection(
+            device_name=IC256_CONFIG.device_name,
+            ip_address="192.168.1.100"
+        )
         
         # Mock ModelCollector - create separate instances for each acquisition
         mock_collectors = [Mock(), Mock(), Mock()]

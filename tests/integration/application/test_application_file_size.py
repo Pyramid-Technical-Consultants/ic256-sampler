@@ -93,7 +93,7 @@ class TestApplicationFileSizeDisplay:
             assert has_non_zero, f"Second acquisition should show file size updates. Got: {second_sizes}"
     
     @pytest.mark.integration
-    @pytest.mark.timeout(15)
+    @pytest.mark.timeout(10)
     def test_file_size_display_after_multiple_acquisitions(self, require_ic256_device, app_with_mock_gui, tmp_path):
         """Integration test: Verify file size displays correctly after multiple acquisitions."""
         app = app_with_mock_gui

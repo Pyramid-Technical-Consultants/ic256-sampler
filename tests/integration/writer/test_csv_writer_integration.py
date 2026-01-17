@@ -24,7 +24,7 @@ from ic256_sampler.virtual_database import VirtualDatabase
 
 
 # Mark all tests in this file as integration tests with timeout
-pytestmark = [pytest.mark.integration, pytest.mark.timeout(15)]
+pytestmark = [pytest.mark.integration, pytest.mark.timeout(10)]
 
 
 class TestCSVWriterIntegration:

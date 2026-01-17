@@ -14,7 +14,7 @@ class TestWebsocketPersistence:
     """Tests for websocket connection persistence between acquisitions."""
     
     @pytest.mark.integration
-    @pytest.mark.timeout(15)
+    @pytest.mark.timeout(10)
     def test_websocket_remains_open_between_acquisitions(self, require_ic256_device, app_with_mock_gui):
         """Test that websocket connections remain open between stop/start cycles."""
         app = app_with_mock_gui

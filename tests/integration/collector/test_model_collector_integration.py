@@ -16,7 +16,7 @@ from ic256_sampler.io_database import IODatabase
 
 
 # Mark all tests as integration tests with timeout
-pytestmark = [pytest.mark.integration, pytest.mark.timeout(20)]
+pytestmark = [pytest.mark.integration, pytest.mark.timeout(15)]
 
 
 class TestModelCollectorVsSimpleCapture:

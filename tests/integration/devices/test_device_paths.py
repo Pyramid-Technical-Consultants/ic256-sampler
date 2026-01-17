@@ -20,7 +20,7 @@ from ic256_sampler.device_paths import (
 )
 from ic256_sampler.utils import is_valid_device, is_valid_ipv4
 
-pytestmark = [pytest.mark.integration, pytest.mark.timeout(10)]
+pytestmark = [pytest.mark.integration, pytest.mark.timeout(5)]
 
 
 

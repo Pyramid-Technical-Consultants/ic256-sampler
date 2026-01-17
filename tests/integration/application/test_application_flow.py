@@ -15,7 +15,7 @@ from ic256_sampler.model_collector import ModelCollector
 from ic256_sampler.ic256_model import IC256Model
 
 # Mark all tests in this file as integration tests with timeout
-pytestmark = [pytest.mark.integration, pytest.mark.timeout(15)]
+pytestmark = [pytest.mark.integration, pytest.mark.timeout(10)]
 
 
 class TestApplicationDataCollectionFlow:

@@ -61,37 +61,19 @@ class Application:
                 self.stop_event.set()
                 self._stopping = True
                 
-                # Stop DeviceManager
-                if self.device_manager:
-                    try:
-                        self.device_manager.stop()
-                    except Exception:
-                        pass
-                
-                # Stop collector
-                if self.collector:
-                    try:
-                        self.collector.stop()
-                    except Exception:
-                        pass
+                # Stop DeviceManager and collector
+                self._safe_stop_resource(self.device_manager, 'stop')
+                self._safe_stop_resource(self.collector, 'stop')
                 
                 # Wait for collector thread to finish (with timeout)
                 if self.collector_thread and self.collector_thread.is_alive():
                     self.collector_thread.join(timeout=5.0)
                 
                 # Finalize collector (flush and close files)
-                if self.collector:
-                    try:
-                        self.collector.finalize()
-                    except Exception:
-                        pass
+                self._safe_stop_resource(self.collector, 'finalize')
             
             # Close all websocket connections
-            if self.device_manager:
-                try:
-                    self.device_manager.close_all_connections()
-                except Exception:
-                    pass
+            self._safe_stop_resource(self.device_manager, 'close_all_connections')
             
         except Exception:
             pass  # Ignore errors during cleanup
@@ -179,6 +161,20 @@ class Application:
         if enable_button:
             set_button_state_safe(self.window, "start_button", "normal")
     
+    def _safe_stop_resource(self, resource, method_name: str) -> None:
+        """Safely call a stop method on a resource, ignoring errors.
+        
+        Args:
+            resource: Resource object (may be None)
+            method_name: Name of method to call (e.g., 'stop', 'close')
+        """
+        if resource:
+            try:
+                method = getattr(resource, method_name)
+                method()
+            except Exception:
+                pass  # Ignore errors during cleanup
+    
     def _connection_status_callback(self, status_dict: Dict[str, str]) -> None:
         """Callback function for connection status updates from device manager.
         
@@ -245,6 +241,34 @@ class Application:
             )
             time.sleep(TIME_UPDATE_INTERVAL)
     
+    def _create_daemon_thread(
+        self,
+        target: callable,
+        name: str,
+        args: tuple = (),
+        start: bool = True
+    ) -> threading.Thread:
+        """Create and optionally start a daemon thread.
+        
+        Args:
+            target: Target function to run in thread
+            name: Thread name
+            args: Arguments to pass to target function
+            start: Whether to start the thread immediately
+            
+        Returns:
+            Thread instance
+        """
+        thread = threading.Thread(
+            target=target,
+            name=name,
+            daemon=True,
+            args=args,
+        )
+        if start:
+            thread.start()
+        return thread
+    
     def _create_stats_updater(self) -> StatisticsUpdater:
         """Create or recreate statistics updater with proper callback.
         
@@ -308,6 +332,98 @@ class Application:
         # Reset stats updater for new collection
         self.stats_updater = None
     
+    def _reset_collection_state(self) -> None:
+        """Reset state for a new collection."""
+        self.stop_event.clear()
+        self._stopping = False
+        safe_gui_update(self.window, self.window.reset_elapse_time)
+        safe_gui_update(self.window, self.window.reset_statistics)
+        set_button_state_safe(self.window, "start_button", "disabled")
+    
+    def _validate_devices_available(self, devices_added: list, ic256_ip: str, tx2_ip: str) -> bool:
+        """Validate that at least one device is available.
+        
+        Args:
+            devices_added: List of device names that were added
+            ic256_ip: IC256 IP address
+            tx2_ip: TX2 IP address
+            
+        Returns:
+            True if devices are available, False otherwise
+        """
+        if len(devices_added) == 0:
+            error_msg = "No devices available for data collection. Please configure at least one device and ensure connections are established."
+            self._handle_collection_error(error_msg)
+            log_message_safe(self.window, f"IC256 IP: {ic256_ip}, TX2 IP: {tx2_ip}", "INFO")
+            if self.device_manager:
+                with self.device_manager._lock:
+                    available_connections = list(self.device_manager.connections.keys())
+                log_message_safe(self.window, f"Available connections: {available_connections}", "INFO")
+            return False
+        return True
+    
+    def _create_and_prepare_collector(
+        self,
+        devices_added: list,
+        sampling_rate: int,
+        save_folder: str,
+        note: str
+    ) -> Optional[ModelCollector]:
+        """Create and prepare collector for data collection.
+        
+        Args:
+            devices_added: List of device names
+            sampling_rate: Sampling rate in Hz
+            save_folder: Directory to save CSV file
+            note: Note string for CSV
+            
+        Returns:
+            ModelCollector instance if successful, None otherwise
+        """
+        collector = ModelCollector.create_for_collection(
+            self.device_manager,
+            devices_added,
+            sampling_rate,
+            save_folder,
+            note,
+            self.device_statistics,
+            log_callback=self._log_callback,
+        )
+        
+        if not collector:
+            self._handle_collection_error("Failed to create collector")
+            return None
+        
+        if not collector.prepare_devices_for_collection(
+            devices_added,
+            sampling_rate,
+            self.stop_event,
+            self._log_callback
+        ):
+            self._handle_collection_error("Failed to prepare devices for collection")
+            return None
+        
+        return collector
+    
+    def _start_collection_threads(self, collector: ModelCollector) -> None:
+        """Start all threads for data collection.
+        
+        Args:
+            collector: ModelCollector instance
+        """
+        self._create_daemon_thread(self._update_elapse_time, "elapse_time")
+        self.stats_thread = self._create_daemon_thread(
+            self._update_statistics,
+            "statistics_update",
+            start=True
+        )
+        self.collector_thread = self._create_daemon_thread(
+            collector.run_collection,
+            "model_collector",
+            args=(self.stop_event,),
+            start=True
+        )
+    
     def _device_thread(self) -> None:
         """Main device thread that sets up and starts data collection."""
         if not self.window:
@@ -315,13 +431,7 @@ class Application:
         
         # Stop any previous threads and reset state
         self._stop_previous_threads()
-        
-        # Clear stop event and reset GUI
-        self.stop_event.clear()
-        self._stopping = False
-        safe_gui_update(self.window, self.window.reset_elapse_time)
-        safe_gui_update(self.window, self.window.reset_statistics)
-        set_button_state_safe(self.window, "start_button", "disabled")
+        self._reset_collection_state()
 
         # Get configuration
         sampling_rate = self._get_sampling_rate()
@@ -337,40 +447,19 @@ class Application:
             tx2_ip
         )
         
-        # Check if any devices were found
-        if len(devices_added) == 0:
-            error_msg = "No devices available for data collection. Please configure at least one device and ensure connections are established."
-            self._handle_collection_error(error_msg)
-            log_message_safe(self.window, f"IC256 IP: {ic256_ip}, TX2 IP: {tx2_ip}", "INFO")
-            if self.device_manager:
-                with self.device_manager._lock:
-                    available_connections = list(self.device_manager.connections.keys())
-                log_message_safe(self.window, f"Available connections: {available_connections}", "INFO")
+        # Validate devices are available
+        if not self._validate_devices_available(devices_added, ic256_ip, tx2_ip):
             return
         
-        # Create collector using factory method
-        collector = ModelCollector.create_for_collection(
-            self.device_manager,
+        # Create and prepare collector
+        collector = self._create_and_prepare_collector(
             devices_added,
             sampling_rate,
             save_folder,
-            note,
-            self.device_statistics,
-            log_callback=self._log_callback,
+            note
         )
         
         if not collector:
-            self._handle_collection_error("Failed to create collector")
-            return
-        
-        # Prepare devices for collection
-        if not collector.prepare_devices_for_collection(
-            devices_added,
-            sampling_rate,
-            self.stop_event,
-            self._log_callback
-        ):
-            self._handle_collection_error("Failed to prepare devices for collection")
             return
         
         # Store collector
@@ -386,29 +475,7 @@ class Application:
         set_button_state_safe(self.window, "stop_button", "normal")
 
         # Start all threads
-        # Elapsed time thread
-        threading.Thread(
-            target=self._update_elapse_time,
-            name="elapse_time",
-            daemon=True
-        ).start()
-        
-        # Statistics update thread
-        self.stats_thread = threading.Thread(
-            target=self._update_statistics,
-            name="statistics_update",
-            daemon=True
-        )
-        self.stats_thread.start()
-        
-        # Collection thread
-        self.collector_thread = threading.Thread(
-            target=collector.run_collection,
-            name="model_collector",
-            daemon=True,
-            args=(self.stop_event,),
-        )
-        self.collector_thread.start()
+        self._start_collection_threads(collector)
         
         log_message_safe(self.window, f"Started data collection: {device_list_str}", "INFO")
     
@@ -432,8 +499,7 @@ class Application:
             )
 
             time.sleep(CONFIG_DELAY)
-            thread = threading.Thread(target=self._device_thread, name="device_thread", daemon=True)
-            thread.start()
+            self._create_daemon_thread(self._device_thread, "device_thread")
         except Exception as e:
             error_msg = f"Error starting collection: {str(e)}"
             self._handle_collection_error(error_msg)
@@ -480,19 +546,9 @@ class Application:
         self.stop_event.set()
         self._stopping = True  # Mark that we're stopping (allows stats to continue updating)
         
-        # Stop DeviceManager (stops collecting new data from devices)
-        if self.device_manager:
-            try:
-                self.device_manager.stop()
-            except Exception:
-                pass
-        
-        # Stop collector (marks as stopped, but processing continues)
-        if self.collector:
-            try:
-                self.collector.stop()
-            except Exception:
-                pass
+        # Stop DeviceManager and collector (stops collecting new data from devices)
+        self._safe_stop_resource(self.device_manager, 'stop')
+        self._safe_stop_resource(self.collector, 'stop')
         
         # Phase 2: Use non-blocking approach to wait for collector thread
         # Update GUI to show we're finishing up
@@ -594,8 +650,7 @@ class Application:
     
     def setup_devices(self) -> None:
         """Start device setup in a separate thread."""
-        thread = threading.Thread(target=self._setup_thread, name="set_up_device", daemon=True)
-        thread.start()
+        self._create_daemon_thread(self._setup_thread, "set_up_device")
     
     def run(self) -> None:
         """Run the application."""

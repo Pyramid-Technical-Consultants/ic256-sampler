@@ -110,7 +110,7 @@ addopts = "-v --cov=ic256_sampler --cov-report=term-missing"
 markers = [
     "integration: marks tests as integration tests (require live devices)",
 ]
-timeout = 10
+timeout = 5
 timeout_method = "thread"
 
 [tool.black]

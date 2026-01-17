@@ -11,7 +11,7 @@ import pytest
 from ic256_sampler.utils import is_valid_device, is_valid_ipv4
 
 # Mark all tests in this file as integration tests with timeout
-pytestmark = [pytest.mark.integration, pytest.mark.timeout(10)]
+pytestmark = [pytest.mark.integration, pytest.mark.timeout(5)]
 
 
 class TestDeviceConnection:
