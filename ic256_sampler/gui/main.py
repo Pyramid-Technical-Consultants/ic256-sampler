@@ -127,6 +127,24 @@ class GUI:
         )
         thread.start()
     
+    def update_ix256_a_icon(self):
+        """Update IC256 device validation icon in background thread."""
+        if hasattr(self, 'setting_tab'):
+            self._update_icon_threaded(
+                self.setting_tab.ix256_a_button,
+                self.setting_tab.ix256_a_entry,
+                "IC256"
+            )
+    
+    def update_tx2_icon(self):
+        """Update TX2 device validation icon in background thread."""
+        if hasattr(self, 'setting_tab'):
+            self._update_icon_threaded(
+                self.setting_tab.tx2_button,
+                self.setting_tab.tx2_entry,
+                "TX2"
+            )
+    
     def render(self):
         """Render all GUI components and start the main loop."""
         # Configure root grid weights for proper resizing
@@ -137,15 +155,12 @@ class GUI:
         # Create tab frame
         tab_frame = tk.Frame(self.root, bg=COLORS["background"])
         tab_frame.grid(row=0, column=0, sticky="nsew")
-        tab_frame.grid_rowconfigure(1, weight=1)  # Notebook row
+        tab_frame.grid_rowconfigure(0, weight=1)  # Notebook row
         tab_frame.grid_columnconfigure(0, weight=1)
-        
-        # Connection status indicator in top left corner
-        self._create_connection_status(tab_frame)
         
         # Create notebook
         self.tab = ttk.Notebook(tab_frame)
-        self.tab.grid(row=1, column=0, sticky="nsew", padx=2, pady=2)
+        self.tab.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
         
         # Apply theme
         apply_theme(self.tab)
@@ -174,9 +189,6 @@ class GUI:
         # Create message frame
         self._create_message_frame()
         
-        # Render date/time display
-        self._render_date_time()
-        
         # Set up window close handler
         self.window_state.setup_close_handler(self._on_window_close)
         
@@ -186,11 +198,11 @@ class GUI:
     def _create_connection_status(self, parent: tk.Widget):
         """Create connection status indicator."""
         connection_frame = tk.Frame(parent, bg=COLORS["background"])
-        connection_frame.grid(row=0, column=0, sticky="nw", padx=10, pady=5)
+        connection_frame.grid(row=0, column=0, sticky="w", padx=(10, 15), pady=5)
         
         self.connection_status_label = tk.Label(
             connection_frame,
-            font=FONTS["date_time"],
+            font=("TkDefaultFont", 14, "bold"),
             fg=COLORS["text_secondary"],
             bg=COLORS["background"],
             text="●",
@@ -201,7 +213,7 @@ class GUI:
         
         self.connection_status_text = tk.Label(
             connection_frame,
-            font=("TkDefaultFont", 9),
+            font=FONTS["label_small"],
             fg=COLORS["text_secondary"],
             bg=COLORS["background"],
             text="",
@@ -211,7 +223,7 @@ class GUI:
         ToolTip(self.connection_status_text, "Click to view detailed connection status", 0, 20)
     
     def _create_message_frame(self):
-        """Create message status bar."""
+        """Create message status bar with connection status, message, and date/time."""
         message_frame = tk.Frame(
             self.root, 
             height=30,
@@ -220,31 +232,40 @@ class GUI:
         )
         message_frame.grid(row=1, column=0, sticky="ew")
         message_frame.grid_propagate(False)
-        message_frame.grid_columnconfigure(0, weight=1)
+        message_frame.grid_columnconfigure(1, weight=1)  # Message column expands
         
+        # Connection status (left)
+        self._create_connection_status(message_frame)
+        
+        # Status message (center, expandable)
         self.message_text = tk.Label(
             message_frame,
             font=FONTS["label_small"],
             anchor="w",
             bg=COLORS["background"],
             fg=COLORS["text_primary"],
-            wraplength=580
+            wraplength=400
         )
-        self.message_text.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
+        self.message_text.grid(row=0, column=1, sticky="ew", padx=10, pady=5)
+        
+        # Date/time (right)
+        self._render_date_time(message_frame)
+        
         self.message_frame = message_frame
     
-    def _render_date_time(self):
-        """Render date/time display in tab header."""
-        header_frame = tk.Frame(self.tab, bg=COLORS["background"])
-        header_frame.pack(side=tk.RIGHT, padx=10, pady=3)
+    def _render_date_time(self, parent: tk.Widget):
+        """Render date/time display in status bar.
         
+        Args:
+            parent: Parent widget (message_frame)
+        """
         self.display_time = tk.Label(
-            header_frame,
-            font=FONTS["date_time"],
-            fg=COLORS["text_primary"],
+            parent,
+            font=FONTS["label_small"],
+            fg=COLORS["text_secondary"],
             bg=COLORS["background"]
         )
-        self.display_time.pack(side=tk.LEFT)
+        self.display_time.grid(row=0, column=2, sticky="e", padx=(10, 15), pady=5)
         self.update_date_time()
     
     def _on_tab_click(self, event):
@@ -288,13 +309,13 @@ class GUI:
             any_error = any(status == "error" for status in status_dict.values())
             any_disconnected = any(status == "disconnected" for status in status_dict.values())
             
-            # Set indicator color
+            # Set indicator color - use actual colors for visibility
             if any_error:
-                status_color = COLORS["error"]
+                status_color = "#CC0000"  # Red for errors
             elif all_connected:
-                status_color = COLORS["success"]
+                status_color = "#006600"  # Green for success
             elif any_disconnected:
-                status_color = COLORS["warning"]
+                status_color = "#FF6600"  # Orange for warnings
             else:
                 status_color = COLORS["text_secondary"]
             
@@ -423,3 +444,18 @@ class GUI:
     def stop_button(self):
         """Get stop button widget."""
         return self.main_tab.stop_button
+    
+    @property
+    def ix256_a_button(self):
+        """Get IC256 validation button widget."""
+        return self.setting_tab.ix256_a_button
+    
+    @property
+    def tx2_button(self):
+        """Get TX2 validation button widget."""
+        return self.setting_tab.tx2_button
+    
+    @property
+    def set_up_button(self):
+        """Get setup button widget."""
+        return self.setting_tab.set_up_button

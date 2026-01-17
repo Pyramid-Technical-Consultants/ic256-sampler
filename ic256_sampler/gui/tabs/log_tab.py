@@ -71,13 +71,14 @@ class LogTab:
         scrollbar.grid(row=0, column=1, sticky="ns")
         
         # Create text widget for log
+        # Use SystemWindow (white/light) background for better text readability
         self.log_text = tk.Text(
             log_frame,
             wrap=tk.WORD,
             yscrollcommand=scrollbar.set,
             font=FONTS["log"],
-            bg=COLORS["background"],
-            fg=COLORS["text_primary"],
+            bg="SystemWindow",  # White/light background for readability
+            fg="SystemWindowText",  # Dark text for contrast
             relief="flat",
             borderwidth=1,
             highlightthickness=1,
@@ -88,12 +89,12 @@ class LogTab:
         self.log_text.grid(row=0, column=0, sticky="nsew")
         scrollbar.config(command=self.log_text.yview)
         
-        # Configure text tags for different log levels
-        self.log_text.tag_config("error", foreground=COLORS["error"], font=FONTS["log_bold"])
-        self.log_text.tag_config("warning", foreground=COLORS["warning"], font=FONTS["log"])
-        self.log_text.tag_config("success", foreground=COLORS["success"], font=FONTS["log"])
-        self.log_text.tag_config("info", foreground=COLORS["primary"], font=FONTS["log"])
-        self.log_text.tag_config("highlight", background="#FFFF00", foreground=COLORS["text_primary"])
+        # Configure text tags for different log levels with high-contrast colors
+        self.log_text.tag_config("error", foreground="#CC0000", font=FONTS["log_bold"])  # Red for errors
+        self.log_text.tag_config("warning", foreground="#FF6600", font=FONTS["log"])  # Orange for warnings
+        self.log_text.tag_config("success", foreground="#006600", font=FONTS["log"])  # Green for success
+        self.log_text.tag_config("info", foreground="#000000", font=FONTS["log"])  # Black for info
+        self.log_text.tag_config("highlight", background="#FFFF00", foreground="#000000")  # Yellow highlight with black text
     
     def _create_action_buttons(self):
         """Create action buttons."""

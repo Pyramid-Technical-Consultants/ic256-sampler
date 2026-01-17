@@ -31,7 +31,7 @@ class SettingsTab:
         self.parent = parent
         self.setup_callback = setup_callback
         self.image_loader = image_loader
-        self.update_icon_callback = update_icon_callback
+        self._update_icon_callback = update_icon_callback
         
         # Configure tab for resizing
         self.parent.grid_rowconfigure(0, weight=1)
@@ -102,7 +102,7 @@ class SettingsTab:
         self.ix256_a_button = tk.Button(
             device_section,
             image=self.image_loader.load_image("search.png", (13, 13)),
-            command=lambda: self.update_icon_callback(self.ix256_a_button, self.ix256_a_entry, "IC256"),
+            command=lambda: self._update_icon_callback(self.ix256_a_button, self.ix256_a_entry, "IC256"),
             relief="raised",
             bg=COLORS["background"],
             cursor="hand2"
@@ -129,7 +129,7 @@ class SettingsTab:
         self.tx2_button = tk.Button(
             device_section,
             image=self.image_loader.load_image("search.png", (13, 13)),
-            command=lambda: self.update_icon_callback(self.tx2_button, self.tx2_entry, "TX2"),
+            command=lambda: self._update_icon_callback(self.tx2_button, self.tx2_entry, "TX2"),
             relief="raised",
             bg=COLORS["background"],
             cursor="hand2"
