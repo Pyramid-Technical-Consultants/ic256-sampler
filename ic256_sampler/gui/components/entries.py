@@ -5,6 +5,7 @@ from typing import Optional
 
 from ..styles.colors import COLORS
 from ..styles.fonts import FONTS
+from ..styles.sizes import ENTRY_PADY
 
 
 class StandardEntry:
@@ -41,6 +42,9 @@ class StandardEntry:
             insertbackground=COLORS["text_primary"],  # Cursor color
             **kwargs
         )
+        
+        # Store padding info for consistent height
+        entry._entry_pady = ENTRY_PADY
         
         return entry
 

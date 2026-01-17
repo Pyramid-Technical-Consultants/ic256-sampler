@@ -5,6 +5,7 @@ from typing import Callable, Optional
 
 from ..styles.colors import COLORS
 from ..styles.fonts import FONTS
+from ..styles.sizes import BUTTON_PADY
 
 
 class StandardButton:
@@ -38,6 +39,9 @@ class StandardButton:
             text_color = COLORS["text_primary"]
         
         # Use native button styling - system relief and border
+        # Use consistent pady unless overridden in kwargs
+        button_pady = kwargs.pop("pady", BUTTON_PADY)
+        
         button = tk.Button(
             parent,
             text=text,
@@ -50,7 +54,7 @@ class StandardButton:
             relief="raised",  # Native raised button appearance
             borderwidth=1,  # Standard native border
             padx=20,
-            pady=8,
+            pady=button_pady,
             cursor="hand2",
             highlightthickness=1,  # Native focus highlight
             **kwargs

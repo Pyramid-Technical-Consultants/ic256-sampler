@@ -44,4 +44,6 @@ class StandardSection:
             **kwargs
         )
         section.grid(row=row, column=column, pady=pady, sticky=sticky)
+        # Ensure the section's column in parent can expand
+        parent.grid_columnconfigure(column, weight=1)
         return section

@@ -16,32 +16,34 @@ class ScrollableFrame:
             parent: Parent widget
         """
         # Create canvas frame
-        canvas_frame = tk.Frame(parent, bg=COLORS["background"])
-        canvas_frame.grid(row=0, column=0, sticky="nsew")
-        canvas_frame.grid_rowconfigure(0, weight=1)
-        canvas_frame.grid_columnconfigure(0, weight=1)
+        self.canvas_frame = tk.Frame(parent, bg=COLORS["background"])
+        self.canvas_frame.grid(row=0, column=0, sticky="nsew")
+        self.canvas_frame.grid_rowconfigure(0, weight=1)
+        self.canvas_frame.grid_columnconfigure(0, weight=1)
         
         # Create canvas
         self.canvas = tk.Canvas(
-            canvas_frame,
+            self.canvas_frame,
             bg=COLORS["background"],
             highlightthickness=0
         )
         self.canvas.grid(row=0, column=0, sticky="nsew")
         
         # Create scrollbar
-        scrollbar = tk.Scrollbar(
-            canvas_frame,
+        self.scrollbar = tk.Scrollbar(
+            self.canvas_frame,
             orient="vertical",
             command=self.canvas.yview
         )
-        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.scrollbar.grid(row=0, column=1, sticky="ns")
         
         # Configure canvas scrolling
-        self.canvas.configure(yscrollcommand=scrollbar.set)
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
         
         # Create scrollable frame inside canvas
         self.scrollable_frame = tk.Frame(self.canvas, bg=COLORS["background"])
+        # Configure scrollable frame to expand horizontally
+        self.scrollable_frame.grid_columnconfigure(0, weight=1)
         self.canvas_window = self.canvas.create_window(
             (0, 0),
             window=self.scrollable_frame,
@@ -50,16 +52,39 @@ class ScrollableFrame:
         
         # Update scroll region when frame size changes
         def configure_scroll_region(event):
-            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+            # Update scroll region to match content
+            bbox = self.canvas.bbox("all")
+            if bbox:
+                self.canvas.configure(scrollregion=bbox)
+            # Update scrollable frame width to match canvas
+            canvas_width = self.canvas.winfo_width()
+            if canvas_width > 1:  # Only update if canvas has been rendered
+                self.canvas.itemconfig(self.canvas_window, width=canvas_width)
         
         self.scrollable_frame.bind("<Configure>", configure_scroll_region)
         
-        # Bind canvas resize to adjust scrollable frame width
+        # Bind canvas resize to adjust scrollable frame width and update scroll region
         def configure_canvas_width(event):
             canvas_width = event.width
-            self.canvas.itemconfig(self.canvas_window, width=canvas_width)
+            if canvas_width > 1:  # Only update if canvas has been rendered
+                self.canvas.itemconfig(self.canvas_window, width=canvas_width)
+                # Update scroll region after width change
+                self.canvas.update_idletasks()
+                bbox = self.canvas.bbox("all")
+                if bbox:
+                    self.canvas.configure(scrollregion=bbox)
         
         self.canvas.bind("<Configure>", configure_canvas_width)
+        
+        # Also bind to parent resize to ensure responsiveness
+        def on_parent_configure(event):
+            # Update scroll region when parent resizes
+            self.canvas.update_idletasks()
+            bbox = self.canvas.bbox("all")
+            if bbox:
+                self.canvas.configure(scrollregion=bbox)
+        
+        parent.bind("<Configure>", on_parent_configure)
         
         # Enable mousewheel scrolling
         self._setup_mousewheel()

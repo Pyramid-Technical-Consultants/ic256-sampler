@@ -4,6 +4,7 @@ import tkinter as tk
 from typing import Optional, Callable
 
 from ..styles import COLORS
+from ..styles.sizes import STANDARD_WIDGET_HEIGHT
 from .tooltip import ToolTip
 
 
@@ -32,6 +33,8 @@ class IconButton:
         Returns:
             Configured button widget
         """
+        # Use STANDARD_WIDGET_HEIGHT for consistent sizing unless explicitly overridden
+        button_height = size[1] if size[1] != 24 else STANDARD_WIDGET_HEIGHT
         button = tk.Button(
             parent,
             image=image,
@@ -40,7 +43,7 @@ class IconButton:
             bg=COLORS["background"],
             cursor="hand2",
             width=size[0],
-            height=size[1],
+            height=button_height,
             **kwargs
         )
         

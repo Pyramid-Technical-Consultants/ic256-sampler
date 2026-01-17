@@ -3,7 +3,7 @@
 import tkinter as tk
 from typing import Callable, Optional
 
-from ..styles import COLORS, FONTS
+from ..styles import COLORS, FONTS, ENTRY_PADY
 from ..components import (
     StandardButton,
     StandardSection,
@@ -78,7 +78,7 @@ class MainTab:
         )
         self.note_entry_wrapper = note_placeholder
         self.note_entry = note_placeholder.get_widget()
-        self.note_entry.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
+        self.note_entry.grid(row=0, column=0, sticky="ew", padx=5, pady=ENTRY_PADY)
         ToolTip(self.note_entry, "Optional note to include in the CSV file name and metadata", 0, 20)
     
     def _create_time_section(self, parent: tk.Widget):
@@ -165,7 +165,7 @@ class MainTab:
         )
         self.rows_label = self.rows_pair.value
         
-        # File size display
+        # File size display (with spacing from rows)
         self.size_pair = LabelValuePair(
             stats_container,
             "File Size:",
@@ -174,6 +174,8 @@ class MainTab:
             column=2,
             spacing=5
         )
+        # Add spacing between the two pairs
+        stats_container.grid_columnconfigure(1, minsize=30)
         self.file_size_label = self.size_pair.value
     
     def _create_button_section(self, parent: tk.Widget):

@@ -4,7 +4,9 @@ import tkinter as tk
 from typing import Optional, Callable
 
 from ..styles import COLORS, FONTS
+from ..styles.sizes import ENTRY_PADY
 from .entries import StandardEntry
+from .icon_buttons import IconButton
 from .tooltip import ToolTip
 
 
@@ -21,6 +23,7 @@ class FormField:
         label_width: int = 18,
         entry_state: str = "normal",
         tooltip: Optional[str] = None,
+        entry_tooltip: Optional[str] = None,  # Alias for tooltip for consistency
         change_callback: Optional[Callable] = None,
         **entry_kwargs
     ):
@@ -35,9 +38,18 @@ class FormField:
             label_width: Label width in characters
             entry_state: Entry state ("normal", "readonly", "disabled")
             tooltip: Optional tooltip text for the entry
+            entry_tooltip: Optional tooltip text (alias for tooltip)
             change_callback: Optional callback for entry changes
-            **entry_kwargs: Additional entry options
+            **entry_kwargs: Additional entry options (will be filtered to valid tk.Entry options)
         """
+        # Use entry_tooltip if provided, otherwise use tooltip
+        final_tooltip = entry_tooltip if entry_tooltip is not None else tooltip
+        
+        # Filter out non-entry options from kwargs
+        # Common invalid options that might be passed
+        invalid_options = {'entry_tooltip', 'entry_state', 'tooltip'}
+        filtered_kwargs = {k: v for k, v in entry_kwargs.items() if k not in invalid_options}
+        
         # Label
         self.label = tk.Label(
             parent,
@@ -48,19 +60,19 @@ class FormField:
             width=label_width,
             anchor="w"
         )
-        self.label.grid(row=row, column=column, padx=(5, 10), pady=8, sticky="w")
+        self.label.grid(row=row, column=column, padx=(5, 10), pady=ENTRY_PADY, sticky="w")
         
         # Entry
-        self.entry = StandardEntry.create(parent, width=entry_width, **entry_kwargs)
+        self.entry = StandardEntry.create(parent, width=entry_width, **filtered_kwargs)
         self.entry.config(state=entry_state)
-        self.entry.grid(row=row, column=column + 1, padx=(0, 5), pady=8, sticky="ew")
+        self.entry.grid(row=row, column=column + 1, padx=(0, 5), pady=ENTRY_PADY, sticky="ew")
         
         # Configure parent column for entry expansion
         parent.grid_columnconfigure(column + 1, weight=1)
         
         # Tooltip
-        if tooltip:
-            ToolTip(self.entry, tooltip, 0, 20)
+        if final_tooltip:
+            ToolTip(self.entry, final_tooltip, 0, 20)
         
         # Change callback
         if change_callback:
@@ -130,12 +142,12 @@ class FormFieldWithButton:
             width=label_width,
             anchor="w"
         )
-        self.label.grid(row=row, column=column, padx=(5, 10), pady=8, sticky="w")
+        self.label.grid(row=row, column=column, padx=(5, 10), pady=ENTRY_PADY, sticky="w")
         
         # Entry
         self.entry = StandardEntry.create(parent, width=entry_width, **entry_kwargs)
         self.entry.config(state=entry_state)
-        self.entry.grid(row=row, column=column + 1, padx=(0, 5), pady=8, sticky="ew")
+        self.entry.grid(row=row, column=column + 1, padx=(0, 5), pady=ENTRY_PADY, sticky="ew")
         
         # Configure parent column for entry expansion
         parent.grid_columnconfigure(column + 1, weight=1)
@@ -152,20 +164,14 @@ class FormFieldWithButton:
         # Button (if provided)
         self.button = None
         if button_image and button_command:
-            self.button = tk.Button(
+            self.button = IconButton.create(
                 parent,
-                image=button_image,
+                button_image,
                 command=button_command,
-                relief="raised",
-                bg=COLORS["background"],
-                cursor="hand2",
-                width=24,
-                height=24
+                tooltip=button_tooltip,
+                size=(24, 24)
             )
-            self.button.grid(row=row, column=column + 2, padx=(0, 5), pady=8)
-            
-            if button_tooltip:
-                ToolTip(self.button, button_tooltip, 0, 20)
+            self.button.grid(row=row, column=column + 2, padx=(0, 5), pady=ENTRY_PADY)
     
     def get(self) -> str:
         """Get entry value."""

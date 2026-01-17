@@ -5,6 +5,7 @@ from typing import Callable
 from tkinter import filedialog
 
 from ..styles import COLORS, FONTS
+from ..styles.sizes import BUTTON_PADY
 from ..components import (
     StandardButton,
     StandardSection,
@@ -159,7 +160,7 @@ class SettingsTab:
             fg_color=COLORS["primary"],
             text_color=COLORS["text_primary"]
         )
-        self.set_up_button.grid(row=0, column=2, padx=(0, 5), pady=8)
+        self.set_up_button.grid(row=0, column=2, padx=(0, 5), pady=BUTTON_PADY)
         ToolTip(self.set_up_button, "Apply sampling rate configuration to all devices", 0, 20)
     
     def _create_path_section(self, parent: tk.Widget):
@@ -193,7 +194,7 @@ class SettingsTab:
             fg_color=COLORS["primary"],
             text_color=COLORS["text_primary"]
         )
-        browse_button.grid(row=0, column=2, padx=(0, 5), pady=8)
+        browse_button.grid(row=0, column=2, padx=(0, 5), pady=BUTTON_PADY)
         
         # Open folder button
         open_icon = self.image_loader.load_image("open_folder.png", (13, 13))
@@ -203,7 +204,7 @@ class SettingsTab:
             command=self._open_directory,
             size=(20, 20)
         )
-        open_button.grid(row=0, column=3, padx=(0, 5), pady=8)
+        open_button.grid(row=0, column=3, padx=(0, 5), pady=BUTTON_PADY)
     
     def _create_save_section(self, parent: tk.Widget):
         """Create save configuration section."""
