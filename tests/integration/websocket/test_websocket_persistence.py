@@ -122,26 +122,36 @@ class TestWebsocketPersistence:
         close1_called = False
         close2_called = False
         
+        def make_close_tracker(name):
+            def close():
+                setattr(mock_clients[name], '_close_called', True)
+            return close
+        
+        mock_clients = {}
         mock_client1 = type('MockClient', (), {
             'ws': type('MockWS', (), {'connected': True})(),
-            'close': lambda: setattr(mock_client1, '_close_called', True) or None
+            'close': None
         })()
+        mock_clients['client1'] = mock_client1
+        mock_client1.close = make_close_tracker('client1')
         
         mock_client2 = type('MockClient', (), {
             'ws': type('MockWS', (), {'connected': True})(),
-            'close': lambda: setattr(mock_client2, '_close_called', True) or None
+            'close': None
         })()
+        mock_clients['client2'] = mock_client2
+        mock_client2.close = make_close_tracker('client2')
         
         mock_connection1 = type('MockConnection', (), {
             'client': mock_client1,
-            'thread': type('MockThread', (), {'is_alive': lambda: False})(),
-            'keepalive_thread': type('MockThread', (), {'is_alive': lambda: False})()
+            'thread': type('MockThread', (), {'is_alive': lambda self: False})(),
+            'keepalive_thread': type('MockThread', (), {'is_alive': lambda self: False})()
         })()
         
         mock_connection2 = type('MockConnection', (), {
             'client': mock_client2,
-            'thread': type('MockThread', (), {'is_alive': lambda: False})(),
-            'keepalive_thread': type('MockThread', (), {'is_alive': lambda: False})()
+            'thread': type('MockThread', (), {'is_alive': lambda self: False})(),
+            'keepalive_thread': type('MockThread', (), {'is_alive': lambda self: False})()
         })()
         
         device_manager.connections = {

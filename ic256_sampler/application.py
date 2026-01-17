@@ -42,6 +42,7 @@ class Application:
         self.device_manager: Optional[DeviceManager] = None  # Single persistent device manager with connections
         self.collector_thread: Optional[threading.Thread] = None
         self.stats_thread: Optional[threading.Thread] = None  # Statistics update thread
+        self.elapse_time_thread: Optional[threading.Thread] = None  # Elapsed time update thread
         self.stats_updater: Optional[StatisticsUpdater] = None  # Statistics updater
         self._stopping = False  # Flag to track if we're in stopping mode
         self._cleanup_registered = False  # Track if cleanup is registered
@@ -319,6 +320,14 @@ class Application:
         if self.device_manager:
             self.device_manager.stop()
         
+        # Stop collector thread if running
+        if self.collector_thread and self.collector_thread.is_alive():
+            # Set stop event to signal collector to stop
+            self.stop_event.set()
+            # Wait for collector thread to finish (with timeout)
+            self.collector_thread.join(timeout=5.0)
+            self.collector_thread = None
+        
         # Stop previous statistics thread if running
         if self.stats_thread and self.stats_thread.is_alive():
             # Use a separate flag to stop stats thread without affecting collection
@@ -328,6 +337,13 @@ class Application:
             # Wait briefly for thread to exit
             self.stats_thread.join(timeout=0.5)
             self.stats_thread = None
+        
+        # Stop elapse_time thread if running
+        if self.elapse_time_thread and self.elapse_time_thread.is_alive():
+            # The thread checks stop_event, so it should stop when stop_event is set
+            # Wait briefly for thread to exit
+            self.elapse_time_thread.join(timeout=0.5)
+            self.elapse_time_thread = None
         
         # Reset stats updater for new collection
         self.stats_updater = None
@@ -411,7 +427,7 @@ class Application:
         Args:
             collector: ModelCollector instance
         """
-        self._create_daemon_thread(self._update_elapse_time, "elapse_time")
+        self.elapse_time_thread = self._create_daemon_thread(self._update_elapse_time, "elapse_time")
         self.stats_thread = self._create_daemon_thread(
             self._update_statistics,
             "statistics_update",
@@ -534,14 +550,13 @@ class Application:
         
         This method:
         1. Stops new data collection (sets stop_event, stops DeviceManager)
-        2. Uses non-blocking approach to wait for collector thread to finish
-        3. Only re-enables start button after all data is written to CSV
+        2. Uses non-blocking approach to wait for collector thread to finish (if GUI available)
+        3. Falls back to blocking wait if no GUI (for tests)
+        4. Only re-enables start button after all data is written to CSV
         
-        Uses GUI after() callbacks to avoid freezing the GUI thread.
+        Uses non-blocking GUI callbacks when window is available for GUI responsiveness.
+        Uses blocking wait when no window (test environments) for reliability.
         """
-        if not self.window:
-            return
-        
         # Phase 1: Stop new data collection
         self.stop_event.set()
         self._stopping = True  # Mark that we're stopping (allows stats to continue updating)
@@ -550,38 +565,90 @@ class Application:
         self._safe_stop_resource(self.device_manager, 'stop')
         self._safe_stop_resource(self.collector, 'stop')
         
-        # Phase 2: Use non-blocking approach to wait for collector thread
         # Update GUI to show we're finishing up
         show_message_safe(self.window, "Finishing data write...", "blue")
         log_message_safe(self.window, "Stopped data collection, finishing CSV write...", "INFO")
         
-        # Use after() callback to periodically check if thread is done (non-blocking)
-        self._check_collector_thread_finished()
+        # Phase 2: Wait for threads to finish
+        # Use non-blocking approach if window exists (for GUI responsiveness)
+        # Use blocking approach if no window (for test reliability)
+        if self.window and hasattr(self.window, 'root') and self.window.root:
+            # Non-blocking: use GUI after() callback
+            self._check_collector_thread_finished()
+        else:
+            # Blocking: wait directly (for tests without GUI)
+            self._wait_for_threads_blocking()
+    
+    def _wait_for_threads_blocking(self) -> None:
+        """Wait for all collection threads to finish (blocking, for tests)."""
+        # Close device manager connections to unblock any threads waiting on websockets
+        # This is important for tests where threads might be blocked in websocket recv()
+        if self.device_manager:
+            self._safe_stop_resource(self.device_manager, 'close_all_connections')
+        
+        # Wait for collector thread
+        if self.collector_thread and self.collector_thread.is_alive():
+            self.collector_thread.join(timeout=10.0)
+        
+        # Stop and wait for stats thread
+        if self.stats_thread and self.stats_thread.is_alive():
+            if self.stats_updater:
+                self.stats_updater.set_stopping(True)
+                self.stats_updater.set_collector_thread_alive(False)
+            self.stats_thread.join(timeout=2.0)
+        
+        # Wait for elapse_time thread
+        if self.elapse_time_thread and self.elapse_time_thread.is_alive():
+            self.elapse_time_thread.join(timeout=1.0)
+        
+        # Wait for device manager threads to finish
+        if self.device_manager:
+            with self.device_manager._lock:
+                for connection in self.device_manager.connections.values():
+                    if connection.thread and connection.thread.is_alive():
+                        connection.thread.join(timeout=2.0)
+        
+        self._stopping = False
+        self._finalize_stop()
     
     def _check_collector_thread_finished(self) -> None:
         """Periodically check if collector thread is finished (non-blocking).
         
         Uses GUI after() callback to avoid blocking the GUI thread.
         """
-        if not self.window:
-            return
-        
         if self.collector_thread and self.collector_thread.is_alive():
             # Thread still running - check again in 100ms (non-blocking)
             self.window.root.after(100, self._check_collector_thread_finished)
         else:
-            # Thread finished - complete cleanup
+            # Thread finished - wait for other threads and complete cleanup
+            # Stop stats thread
+            if self.stats_thread and self.stats_thread.is_alive():
+                if self.stats_updater:
+                    self.stats_updater.set_stopping(True)
+                    self.stats_updater.set_collector_thread_alive(False)
+                # Use a short timeout for non-blocking check
+                self.stats_thread.join(timeout=0.1)
+                if self.stats_thread.is_alive():
+                    # Still alive, check again
+                    self.window.root.after(100, self._check_collector_thread_finished)
+                    return
+            
+            # Wait for elapse_time thread (should stop quickly)
+            if self.elapse_time_thread and self.elapse_time_thread.is_alive():
+                self.elapse_time_thread.join(timeout=0.1)
+                if self.elapse_time_thread.is_alive():
+                    # Still alive, check again
+                    self.window.root.after(100, self._check_collector_thread_finished)
+                    return
+            
+            # All threads finished - complete cleanup
             self._stopping = False
-            # Statistics thread will stop naturally when it sees stop_event is set
-            # No need to set stop_event again - it's already set
             self._finalize_stop()
     
     def _finalize_stop(self) -> None:
         """Finalize stop process after collector thread has finished."""
-        if not self.window:
-            return
-        
         # Phase 3: Reset GUI - only enable start button after all work is done
+        # Safe to call even if window is None (for tests)
         set_button_state_safe(self.window, "stop_button", "disabled")
         set_button_state_safe(self.window, "start_button", "normal")
         show_message_safe(self.window, "Data collection stopped.", "blue")

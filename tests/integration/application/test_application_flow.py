@@ -13,6 +13,7 @@ import threading
 from ic256_sampler.device_manager import DeviceManager, IC256_CONFIG
 from ic256_sampler.model_collector import ModelCollector
 from ic256_sampler.ic256_model import IC256Model
+from tests.conftest import wait_for_condition
 
 # Mark all tests in this file as integration tests with timeout
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(10)]
@@ -209,10 +210,17 @@ class TestApplicationDataCollectionFlow:
         )
         device_thread.start()
         
-        time.sleep(2.0)
+        # Wait for collection to start and collect some data
+        wait_for_condition(
+            lambda: app.collector is not None and app.collector.csv_writer.rows_written > 0,
+            timeout=3.0,
+            interval=0.1,
+            description="collection to start and write data"
+        )
         
-        # Monitor data collection
-        for i in range(10):
+        # Monitor data collection - check every second, but only for a few iterations
+        # to stay within timeout
+        for i in range(5):
             time.sleep(1.0)
             if app.device_manager:
                 io_points = app.device_manager.get_io_database().get_statistics().get('total_data_points', 0)

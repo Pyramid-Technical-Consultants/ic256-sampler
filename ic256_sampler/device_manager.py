@@ -107,8 +107,12 @@ class DeviceManager:
             else:
                 # IP changed - remove old connection
                 try:
+                    # Stop and join main collection thread
                     if existing_conn.thread.is_alive():
                         existing_conn.thread.join(timeout=1.0)
+                    # Stop and join keepalive thread
+                    if existing_conn.keepalive_thread and existing_conn.keepalive_thread.is_alive():
+                        existing_conn.keepalive_thread.join(timeout=0.5)
                     existing_conn.client.close()
                 except Exception:
                     pass
@@ -360,7 +364,13 @@ class DeviceManager:
             if device_name not in self.connections:
                 return False
             conn = self.connections.get(device_name)
-            return conn and conn.client is client and client.ws != "" and client.ws.connected
+            if not conn or conn.client is not client:
+                return False
+            # Safely check websocket connection status
+            try:
+                return client.ws != "" and client.ws.connected
+            except (AttributeError, TypeError):
+                return False
     
     @staticmethod
     def _is_connection_error(e: Exception) -> bool:
@@ -475,8 +485,12 @@ class DeviceManager:
             
             old_conn = self.connections[device_name]
             try:
+                # Stop and join main collection thread
                 if old_conn.thread.is_alive():
                     old_conn.thread.join(timeout=1.0)
+                # Stop and join keepalive thread
+                if old_conn.keepalive_thread and old_conn.keepalive_thread.is_alive():
+                    old_conn.keepalive_thread.join(timeout=0.5)
                 old_conn.client.close()
             except Exception:
                 pass
@@ -783,6 +797,8 @@ class DeviceManager:
         channels_to_add: set[str] = set()
         
         # Collect all data points first (without holding lock)
+        # First pass: collect all channel paths that might need to be added
+        potential_channels = set()
         for field_name, channel in channels.items():
             try:
                 data = channel.getDatums()
@@ -797,10 +813,7 @@ class DeviceManager:
                     except (AttributeError, TypeError):
                         channel_path = field_name
                 
-                # Check if channel needs to be added (we'll do this in batch later)
-                with self._lock:
-                    if channel_path not in self.io_database.get_all_channels():
-                        channels_to_add.add(channel_path)
+                potential_channels.add(channel_path)
                 
                 # Process data points
                 for data_point in data:
@@ -831,6 +844,14 @@ class DeviceManager:
             except Exception as e:
                 print(f"Error collecting data from {field_name}: {e}")
                 continue
+        
+        # Check which channels need to be added (single lock acquisition)
+        if potential_channels:
+            with self._lock:
+                existing_channels = self.io_database.get_all_channels()
+                for channel_path in potential_channels:
+                    if channel_path not in existing_channels:
+                        channels_to_add.add(channel_path)
         
         # Batch update database (single lock acquisition)
         if channels_to_add or all_points:

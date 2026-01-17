@@ -231,6 +231,7 @@ class ModelCollector:
         
         # Update sampling rate on existing connections and create new threads
         for device_name in devices_added:
+            # Get connection reference (validate it exists)
             with self.device_manager._lock:
                 if device_name not in self.device_manager.connections:
                     if log_callback:
@@ -241,8 +242,16 @@ class ModelCollector:
                     continue
                 
                 connection = self.device_manager.connections[device_name]
+                # Store a reference to config and ip_address while holding lock
+                # to avoid issues if connection is removed
+                config = connection.config
+                ip_address = connection.ip_address
+                client = connection.client
+                channels = connection.channels
+                model = connection.model
+                field_to_path = connection.field_to_path
             
-            # Setup device with error recovery
+            # Setup device with error recovery (releases lock internally)
             setup_success = self.device_manager.setup_device_for_collection(
                 device_name,
                 sampling_rate,
@@ -257,21 +266,52 @@ class ModelCollector:
                     )
                 continue
             
-            # Ensure old thread is stopped before creating new one
-            if connection.thread.is_alive():
-                # Old thread is still running - wait for it to stop
-                connection.thread.join(timeout=1.0)
+            # Validate connection still exists and get thread reference
+            with self.device_manager._lock:
+                if device_name not in self.device_manager.connections:
+                    if log_callback:
+                        log_callback(
+                            f"Device {device_name} connection was removed during setup",
+                            "WARNING"
+                        )
+                    continue
+                # Re-get connection in case it was replaced
+                connection = self.device_manager.connections[device_name]
+                
+                # Ensure old thread is stopped before creating new one
+                if connection.thread and connection.thread.is_alive():
+                    # Old thread is still running - wait for it to stop
+                    old_thread = connection.thread
+                else:
+                    old_thread = None
+            
+            # Join old thread outside of lock to avoid deadlock
+            if old_thread:
+                old_thread.join(timeout=1.0)
             
             # Create new data collection thread for this acquisition
-            config = connection.config
             thread = threading.Thread(
                 target=self.device_manager._collect_from_device,
-                name=f"{config.device_type.lower()}_device_{connection.ip_address}",
+                name=f"{config.device_type.lower()}_device_{ip_address}",
                 daemon=True,
-                args=(config, connection.client, connection.channels, connection.model, 
-                      connection.field_to_path, connection.ip_address),
+                args=(config, client, channels, model, field_to_path, ip_address),
             )
-            connection.thread = thread
+            
+            # Update connection thread reference (with lock)
+            with self.device_manager._lock:
+                if device_name in self.device_manager.connections:
+                    self.device_manager.connections[device_name].thread = thread
+                else:
+                    # Connection was removed, don't start thread
+                    if log_callback:
+                        log_callback(
+                            f"Device {device_name} connection removed before thread start",
+                            "WARNING"
+                        )
+                    continue
+            
+            # Start thread outside of lock
+            thread.start()
         
         return True
     

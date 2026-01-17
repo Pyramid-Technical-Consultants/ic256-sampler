@@ -483,3 +483,191 @@ class TestIODatabaseEdgeCases:
         assert channel_path in data
         # May return None if no point within tolerance, or closest point
         assert data[channel_path] is None or data[channel_path].value in [200, 300]
+
+
+class TestIODatabaseMissingCoverage:
+    """Tests for IODatabase methods with missing coverage."""
+    
+    def test_channel_data_add_point_with_reference_timestamp(self):
+        """Test ChannelData.add_point with explicit reference_timestamp.
+        
+        Note: For the first point, reference_timestamp is ignored and first_timestamp
+        is used as the reference. This test verifies behavior for subsequent points.
+        """
+        channel_data = ChannelData(channel_path="/test/channel")
+        
+        base_timestamp = 1000000000000000000
+        
+        # Add first point (reference_timestamp parameter is ignored, uses timestamp itself)
+        channel_data.add_point(100, base_timestamp, reference_timestamp=base_timestamp - int(10e9))
+        first_point = channel_data.data_points[0]
+        # First point always has elapsed_time = 0.0
+        assert abs(first_point.elapsed_time - 0.0) < 1e-9
+        
+        # Add second point with explicit reference timestamp
+        reference = base_timestamp - int(2e9)  # 2 seconds before base
+        timestamp2 = base_timestamp + int(1e9)  # 1 second after base
+        channel_data.add_point(200, timestamp2, reference_timestamp=reference)
+        
+        # Second point's elapsed time should be calculated from reference
+        second_point = channel_data.data_points[1]
+        expected_elapsed = (timestamp2 - reference) / 1e9  # Should be 3.0 seconds
+        assert abs(second_point.elapsed_time - expected_elapsed) < 1e-9
+    
+    def test_channel_data_add_point_reference_after_first(self):
+        """Test ChannelData.add_point when reference_timestamp is set after first point."""
+        channel_data = ChannelData(channel_path="/test/channel")
+        
+        base_timestamp = 1000000000000000000
+        
+        # Add first point (sets first_timestamp)
+        channel_data.add_point(100, base_timestamp)
+        
+        # Add second point with explicit reference (different from first_timestamp)
+        reference = base_timestamp + int(1e9)  # 1 second after first
+        timestamp2 = base_timestamp + int(2e9)  # 2 seconds after first
+        channel_data.add_point(200, timestamp2, reference_timestamp=reference)
+        
+        # Second point's elapsed time should be calculated from reference
+        points = list(channel_data.data_points)
+        assert len(points) == 2
+        # First point: elapsed_time = 0 (relative to itself)
+        assert abs(points[0].elapsed_time - 0.0) < 1e-9
+        # Second point: elapsed_time = (timestamp2 - reference) / 1e9 = 1.0
+        assert abs(points[1].elapsed_time - 1.0) < 1e-9
+    
+    def test_get_points_in_range_large_dataset(self):
+        """Test get_points_in_range with large dataset (uses binary search)."""
+        channel_data = ChannelData(channel_path="/test/channel")
+        
+        base_timestamp = 1000000000000000000
+        # Add 200 points to trigger binary search path (threshold is 100)
+        for i in range(200):
+            timestamp = base_timestamp + int(i * 0.01 * 1e9)  # 0.01s apart
+            channel_data.add_point(i, timestamp)
+        
+        # Query range in the middle
+        points = channel_data.get_points_in_range(0.5, 1.5)
+        
+        # Should return points between 0.5s and 1.5s (50-150 points)
+        assert len(points) == 101  # 50 to 150 inclusive
+        assert points[0].value == 50
+        assert points[-1].value == 150
+    
+    def test_get_point_at_time_large_dataset(self):
+        """Test get_point_at_time with large dataset (uses binary search)."""
+        channel_data = ChannelData(channel_path="/test/channel")
+        
+        base_timestamp = 1000000000000000000
+        # Add 100 points to trigger binary search path (threshold is 50)
+        for i in range(100):
+            timestamp = base_timestamp + int(i * 0.01 * 1e9)  # 0.01s apart
+            channel_data.add_point(i, timestamp)
+        
+        # Query point at 0.5s elapsed time
+        point = channel_data.get_point_at_time(0.5, tolerance=0.01)
+        
+        assert point is not None
+        assert point.value == 50
+        assert abs(point.elapsed_time - 0.5) < 0.01
+    
+    def test_get_point_at_time_large_dataset_outside_tolerance(self):
+        """Test get_point_at_time with large dataset when no point within tolerance."""
+        channel_data = ChannelData(channel_path="/test/channel")
+        
+        base_timestamp = 1000000000000000000
+        # Add 100 points
+        for i in range(100):
+            timestamp = base_timestamp + int(i * 0.01 * 1e9)
+            channel_data.add_point(i, timestamp)
+        
+        # Query point far outside range with small tolerance
+        point = channel_data.get_point_at_time(10.0, tolerance=0.001)
+        
+        # Should return None (no point within tolerance)
+        assert point is None
+    
+    def test_channel_data_get_statistics_empty(self):
+        """Test ChannelData.get_statistics with empty channel."""
+        channel_data = ChannelData(channel_path="/test/channel")
+        
+        stats = channel_data.get_statistics()
+        
+        assert stats['count'] == 0
+        assert stats['first_timestamp'] is None
+        assert stats['last_timestamp'] is None
+    
+    def test_get_data_in_range(self):
+        """Test IODatabase.get_data_in_range method."""
+        db = IODatabase()
+        
+        channel1 = "/test/channel1"
+        channel2 = "/test/channel2"
+        
+        base_timestamp = 1000000000000000000
+        
+        # Add points to both channels
+        for i in range(10):
+            timestamp = base_timestamp + int(i * 0.1 * 1e9)  # 0.1s apart
+            db.add_data_point(channel1, i * 10, timestamp)
+            db.add_data_point(channel2, i * 20, timestamp)
+        
+        # Get data in range 0.5s to 1.5s
+        data = db.get_data_in_range(0.5, 1.5)
+        
+        # Should return data for both channels
+        assert channel1 in data
+        assert channel2 in data
+        assert len(data[channel1]) > 0
+        assert len(data[channel2]) > 0
+        
+        # All points should be in the specified range
+        for channel_path, points in data.items():
+            for point in points:
+                assert 0.5 <= point.elapsed_time <= 1.5
+    
+    def test_get_data_in_range_empty_range(self):
+        """Test get_data_in_range with range that has no data."""
+        db = IODatabase()
+        channel_path = "/test/channel"
+        
+        base_timestamp = 1000000000000000000
+        
+        # Add points only at 0-1 seconds
+        for i in range(10):
+            timestamp = base_timestamp + int(i * 0.1 * 1e9)
+            db.add_data_point(channel_path, i, timestamp)
+        
+        # Query range 10-11 seconds (no data)
+        data = db.get_data_in_range(10.0, 11.0)
+        
+        # Should return empty list for the channel
+        assert channel_path in data
+        assert len(data[channel_path]) == 0
+    
+    def test_get_data_in_range_partial_coverage(self):
+        """Test get_data_in_range when only some channels have data in range."""
+        db = IODatabase()
+        
+        channel1 = "/test/channel1"
+        channel2 = "/test/channel2"
+        
+        base_timestamp = 1000000000000000000
+        
+        # Channel1: data at 0-1 seconds
+        for i in range(10):
+            timestamp = base_timestamp + int(i * 0.1 * 1e9)
+            db.add_data_point(channel1, i, timestamp)
+        
+        # Channel2: data at 2-3 seconds
+        for i in range(10):
+            timestamp = base_timestamp + int((2 + i * 0.1) * 1e9)
+            db.add_data_point(channel2, i, timestamp)
+        
+        # Query range 0.5-1.5 seconds (only channel1 has data)
+        data = db.get_data_in_range(0.5, 1.5)
+        
+        assert channel1 in data
+        assert channel2 in data
+        assert len(data[channel1]) > 0
+        assert len(data[channel2]) == 0  # No data in range

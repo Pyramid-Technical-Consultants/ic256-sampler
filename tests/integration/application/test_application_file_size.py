@@ -10,6 +10,7 @@ import time
 import threading
 from unittest.mock import Mock, patch
 from ic256_sampler.application import Application
+from tests.conftest import wait_for_condition
 
 
 class TestApplicationFileSizeDisplay:
@@ -114,10 +115,18 @@ class TestApplicationFileSizeDisplay:
             daemon=True
         )
         device_thread.start()
-        time.sleep(2.0)
-        time.sleep(3.0)
+        
+        # Wait for data collection to start and collect some data
+        # Use shorter timeout and smaller interval for faster response
+        wait_for_condition(
+            lambda: len(file_size_updates) > 0 and len(rows_updates) > 0 and rows_updates[-1] > 0,
+            timeout=3.0,
+            interval=0.05,
+            description="first acquisition to collect data"
+        )
+        
         app.stop_collection()
-        time.sleep(2.0)
+        # stop_collection() now blocks and waits for threads, so no need for additional sleep
         
         if file_size_updates:
             first_final_size = file_size_updates[-1]
@@ -135,16 +144,30 @@ class TestApplicationFileSizeDisplay:
             daemon=True
         )
         device_thread.start()
-        time.sleep(2.0)
+        
+        # Wait for second acquisition to start (should show initial small/zero file size)
+        wait_for_condition(
+            lambda: len(file_size_updates) > 0,
+            timeout=2.0,
+            interval=0.05,
+            description="second acquisition to start"
+        )
         
         if file_size_updates:
             first_update_size = file_size_updates[0]
             assert "0 B" in first_update_size or float(first_update_size.split()[0]) < 1.0, \
                 f"Second acquisition should start with small/zero file size. Got: {first_update_size}"
         
-        time.sleep(3.0)
+        # Wait for data to be collected in second acquisition
+        wait_for_condition(
+            lambda: len(rows_updates) > 0 and rows_updates[-1] > 0,
+            timeout=3.0,
+            interval=0.05,
+            description="second acquisition to collect data"
+        )
+        
         app.stop_collection()
-        time.sleep(2.0)
+        # stop_collection() now blocks and waits for threads, so no need for additional sleep
         
         if file_size_updates:
             second_final_size = file_size_updates[-1]
