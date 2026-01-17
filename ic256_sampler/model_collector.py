@@ -10,12 +10,14 @@ VirtualDatabase and CSVWriter for output.
 
 import time
 import threading
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Callable
 from pathlib import Path
-from .device_manager import DeviceManager
+from .device_manager import DeviceManager, IC256_CONFIG, TX2_CONFIG
 from .io_database import IODatabase
 from .virtual_database import VirtualDatabase, ColumnDefinition
 from .csv_writer import CSVWriter
+from .file_path_generator import get_file_path_for_primary_device
+from .gui_helpers import log_message_safe
 
 
 class ModelCollector:
@@ -126,18 +128,18 @@ class ModelCollector:
         self.virtual_database.rebuild()
         
         # STEP 2: Write new rows to CSV
-        self.csv_writer.write_all()
+        rows_written_this_iteration = self.csv_writer.write_all()
         
-        # STEP 3: Update statistics
+        # STEP 3: Update statistics - ALWAYS update after write_all() to ensure accuracy
         with self._lock:
-            total_rows = self.csv_writer.rows_written
-            if total_rows != self.statistics["rows"]:
-                self.statistics["rows"] = total_rows
-                if total_rows % 1000 == 0:  # Update file size less frequently
-                    try:
-                        self.statistics["file_size"] = self.csv_writer.file_size
-                    except (OSError, AttributeError):
-                        pass
+            # Always update rows count to match actual rows written
+            self.statistics["rows"] = self.csv_writer.rows_written
+            # Update file size periodically or if rows were written this iteration
+            if rows_written_this_iteration > 0 or self.csv_writer.rows_written % 1000 == 0:
+                try:
+                    self.statistics["file_size"] = self.csv_writer.file_size
+                except (OSError, AttributeError):
+                    pass
         
         # STEP 4: Flush/sync periodically
         if self.csv_writer.rows_written % 1000 == 0:
@@ -165,8 +167,10 @@ class ModelCollector:
         self.csv_writer.sync()
         self.csv_writer.close()
         
-        # Final statistics update
+        # Final statistics update - CRITICAL: Update rows count as well as file_size
         with self._lock:
+            # Update rows count to match actual rows written
+            self.statistics["rows"] = self.csv_writer.rows_written
             try:
                 self.statistics["file_size"] = self.csv_writer.file_size
             except (OSError, AttributeError):
@@ -192,6 +196,236 @@ class ModelCollector:
         with self._lock:
             return self.statistics.copy()
     
+    def prepare_devices_for_collection(
+        self,
+        devices_added: List[str],
+        sampling_rate: int,
+        stop_event: threading.Event,
+        log_callback: Optional[Callable[[str, str], None]] = None,
+    ) -> bool:
+        """Prepare devices for data collection.
+        
+        Sets up devices, creates threads, and prepares for collection.
+        
+        Args:
+            devices_added: List of device names to prepare
+            sampling_rate: Sampling rate in Hz
+            stop_event: Threading event for stopping collection
+            log_callback: Optional callback for logging (message, level)
+            
+        Returns:
+            True if preparation succeeded, False otherwise
+        """
+        # CRITICAL: Set stop_event BEFORE calling stop() so stop() uses the correct event
+        self.device_manager.stop_event = stop_event
+        
+        # CRITICAL: Stop any previous acquisition to reset _running state
+        # This ensures start() will actually start the threads
+        self.device_manager.stop()
+        
+        # Clear the database for new acquisition
+        self.device_manager.clear_database()
+        
+        # Update sampling rate on existing connections and create new threads
+        for device_name in devices_added:
+            with self.device_manager._lock:
+                if device_name not in self.device_manager.connections:
+                    if log_callback:
+                        log_callback(
+                            f"Device {device_name} not found in connections",
+                            "ERROR"
+                        )
+                    continue
+                
+                connection = self.device_manager.connections[device_name]
+            
+            # Setup device with error recovery
+            setup_success = self.device_manager.setup_device_for_collection(
+                device_name,
+                sampling_rate,
+                log_callback
+            )
+            
+            if not setup_success:
+                if log_callback:
+                    log_callback(
+                        f"Failed to setup {device_name} for collection",
+                        "WARNING"
+                    )
+                continue
+            
+            # Ensure old thread is stopped before creating new one
+            if connection.thread.is_alive():
+                # Old thread is still running - wait for it to stop
+                connection.thread.join(timeout=1.0)
+            
+            # Create new data collection thread for this acquisition
+            config = connection.config
+            thread = threading.Thread(
+                target=self.device_manager._collect_from_device,
+                name=f"{config.device_type.lower()}_device_{connection.ip_address}",
+                daemon=True,
+                args=(config, connection.client, connection.channels, connection.model, 
+                      connection.field_to_path, connection.ip_address),
+            )
+            connection.thread = thread
+        
+        return True
+    
+    def run_collection(self, stop_event: threading.Event) -> None:
+        """Run the complete data collection lifecycle.
+        
+        This method:
+        1. Starts data collection
+        2. Processes data while collection is active
+        3. When stop_event is set, stops new data collection but continues processing
+        4. Continues processing until all collected data is written to CSV
+        5. Finalizes output
+        
+        Args:
+            stop_event: Threading event to signal stop (stops new data collection)
+        """
+        self.start()
+        
+        try:
+            # Phase 1: Active collection - collect and process data
+            while not stop_event.is_set():
+                self.collect_iteration()
+                time.sleep(0.001)  # update_interval
+            
+            # Phase 2: Stop new data collection but continue processing existing data
+            self.stop()  # This stops DeviceManager from collecting new data
+            
+            # Continue processing until all data is written
+            # Process aggressively with smart finish detection and time limit
+            max_iterations = 50000  # Safety limit
+            max_time = 30.0  # Maximum time to spend processing (30 seconds)
+            start_time = time.time()
+            iteration = 0
+            consecutive_no_change = 0
+            previous_rows_written = 0
+            previous_virtual_rows = 0
+            
+            # Get initial state
+            self.collect_iteration()  # One iteration to get initial state
+            previous_rows_written = self.csv_writer.rows_written
+            previous_virtual_rows = self.virtual_database.get_row_count()
+            
+            while iteration < max_iterations and (time.time() - start_time) < max_time:
+                self.collect_iteration()
+                iteration += 1
+                
+                # Check progress every 25 iterations (reduces overhead)
+                if iteration % 25 == 0:
+                    current_rows = self.csv_writer.rows_written
+                    current_virtual_rows = self.virtual_database.get_row_count()
+                    
+                    # Check if we've caught up: written rows should match virtual rows
+                    # AND virtual rows should not be growing (all IODatabase data processed)
+                    if (current_rows == previous_rows_written and 
+                        current_virtual_rows == previous_virtual_rows and
+                        current_rows >= current_virtual_rows - 10):  # Allow small difference
+                        consecutive_no_change += 1
+                        # If no change for 8 checks (200 iterations), we're done
+                        if consecutive_no_change >= 8:
+                            break
+                    else:
+                        consecutive_no_change = 0
+                        previous_rows_written = current_rows
+                        previous_virtual_rows = current_virtual_rows
+                
+                # Minimal sleep - only every 200 iterations
+                if iteration % 200 == 0:
+                    time.sleep(0.00005)  # 50 microseconds
+            
+            # Final processing pass - ensure everything is written
+            for _ in range(15):
+                self.collect_iteration()
+                if _ % 5 == 0:
+                    time.sleep(0.0001)
+        
+        finally:
+            # Finalize output (flush, sync, close)
+            self.finalize()
+    
+    @classmethod
+    def create_for_collection(
+        cls,
+        device_manager: DeviceManager,
+        devices_added: List[str],
+        sampling_rate: int,
+        save_folder: str,
+        note: str,
+        device_statistics: Dict[str, Dict[str, Any]],
+    ) -> Optional['ModelCollector']:
+        """Create a ModelCollector for data collection (factory method).
+        
+        Args:
+            device_manager: DeviceManager instance
+            devices_added: List of device names that were added
+            sampling_rate: Sampling rate in Hz
+            save_folder: Directory to save CSV file
+            note: Note string for CSV
+            device_statistics: Dictionary to store statistics (will be updated)
+            
+        Returns:
+            ModelCollector instance, or None if creation failed
+        """
+        # Get file path for primary device
+        file_path, primary_device_config = get_file_path_for_primary_device(
+            save_folder,
+            devices_added
+        )
+        
+        # Create ModelCollector using the primary device's model and reference channel
+        primary_model = primary_device_config.model_creator()
+        reference_channel = primary_model.get_reference_channel()
+        
+        collector = cls(
+            device_manager=device_manager,
+            model=primary_model,
+            reference_channel=reference_channel,
+            sampling_rate=sampling_rate,
+            file_path=file_path,
+            device_name=primary_device_config.device_type.lower(),
+            note=note,
+        )
+        
+        # Initialize statistics - reset to ensure clean state for new acquisition
+        # This ensures file size and row counts start at 0 for the new acquisition
+        device_statistics.clear()
+        device_statistics.update({
+            device: {"rows": 0, "file_size": 0, "file_path": ""} 
+            for device in devices_added
+        })
+        collector.statistics = device_statistics.get(primary_device_config.device_name, {})
+        
+        return collector
+    
+    @staticmethod
+    def get_devices_added(
+        device_manager: DeviceManager,
+        ic256_ip: Optional[str],
+        tx2_ip: Optional[str],
+    ) -> List[str]:
+        """Get list of device names that should be added based on IP addresses.
+        
+        Args:
+            device_manager: DeviceManager instance
+            ic256_ip: IC256 IP address (None or empty means not added)
+            tx2_ip: TX2 IP address (None or empty means not added)
+            
+        Returns:
+            List of device names that are configured
+        """
+        devices_added = []
+        with device_manager._lock:
+            if ic256_ip and IC256_CONFIG.device_name in device_manager.connections:
+                devices_added.append(IC256_CONFIG.device_name)
+            if tx2_ip and TX2_CONFIG.device_name in device_manager.connections:
+                devices_added.append(TX2_CONFIG.device_name)
+        return devices_added
+    
 
 
 
@@ -203,75 +437,12 @@ def collect_data_with_model(
 ) -> None:
     """Run data collection loop with a ModelCollector.
     
-    This function:
-    1. Starts data collection
-    2. Processes data while collection is active
-    3. When stop_event is set, stops new data collection but continues processing
-    4. Continues processing until all collected data is written to CSV
-    5. Finalizes output
+    This is a convenience function that calls collector.run_collection().
+    Kept for backward compatibility.
     
     Args:
         collector: ModelCollector instance
         stop_event: Threading event to signal stop (stops new data collection)
-        update_interval: Time between collection iterations (seconds)
+        update_interval: Time between collection iterations (seconds) - ignored, uses 0.001
     """
-    collector.start()
-    
-    try:
-        # Phase 1: Active collection - collect and process data
-        while not stop_event.is_set():
-            collector.collect_iteration()
-            time.sleep(update_interval)
-        
-        # Phase 2: Stop new data collection but continue processing existing data
-        collector.stop()  # This stops DeviceManager from collecting new data
-        
-        # Continue processing until all data is written
-        # Process aggressively with smart finish detection
-        max_iterations = 50000  # Safety limit
-        iteration = 0
-        consecutive_no_change = 0
-        previous_rows_written = 0
-        previous_virtual_rows = 0
-        
-        # Get initial state
-        collector.collect_iteration()  # One iteration to get initial state
-        previous_rows_written = collector.csv_writer.rows_written
-        previous_virtual_rows = collector.virtual_database.get_row_count()
-        
-        while iteration < max_iterations:
-            collector.collect_iteration()
-            iteration += 1
-            
-            # Check progress every 25 iterations (reduces overhead)
-            if iteration % 25 == 0:
-                current_rows = collector.csv_writer.rows_written
-                current_virtual_rows = collector.virtual_database.get_row_count()
-                
-                # Check if we've caught up: written rows should match virtual rows
-                # AND virtual rows should not be growing (all IODatabase data processed)
-                if (current_rows == previous_rows_written and 
-                    current_virtual_rows == previous_virtual_rows and
-                    current_rows >= current_virtual_rows - 10):  # Allow small difference
-                    consecutive_no_change += 1
-                    # If no change for 8 checks (200 iterations), we're done
-                    if consecutive_no_change >= 8:
-                        break
-                else:
-                    consecutive_no_change = 0
-                    previous_rows_written = current_rows
-                    previous_virtual_rows = current_virtual_rows
-            
-            # Minimal sleep - only every 200 iterations
-            if iteration % 200 == 0:
-                time.sleep(0.00005)  # 50 microseconds
-        
-        # Final processing pass - ensure everything is written
-        for _ in range(15):
-            collector.collect_iteration()
-            if _ % 5 == 0:
-                time.sleep(0.0001)
-        
-    finally:
-        # Finalize output (flush, sync, close)
-        collector.finalize()
+    collector.run_collection(stop_event)

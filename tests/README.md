@@ -1,16 +1,34 @@
 # Test Suite
 
-This directory contains the unit test suite for IC256 Sampler.
+This directory contains the unit and integration test suite for IC256 Sampler.
 
-## Test Files
+## Test Organization
 
-- **`test_utils.py`** - Tests for utility functions (IP validation, device validation with mocks)
-- **`test_device_paths.py`** - Tests for device path configuration and helper functions
-- **`test_ic256_model.py`** - Tests for IC256Model conversion functions and column definitions
-- **`test_config.py`** - Tests for configuration management (loading, saving, validation)
-- **`test_device_manager.py`** - **NEW**: Unit and integration tests for DeviceManager data collection
-- **`test_integration.py`** - Integration tests that require live device connections (optional)
-- **`conftest.py`** - Pytest configuration and shared fixtures
+Tests are now organized into a clear structure separating unit tests from integration tests:
+
+```
+tests/
+├── unit/                    # Pure unit tests (no live devices, fast)
+│   ├── core/               # Core utility modules
+│   ├── database/           # Database modules
+│   ├── manager/            # Device manager
+│   ├── collector/          # Data collectors
+│   ├── writer/             # CSV writer
+│   └── application/         # Application class
+│
+├── integration/             # Integration tests (may require live devices)
+│   ├── devices/            # Device connection tests
+│   ├── application/        # Application integration tests
+│   ├── manager/            # Device manager integration
+│   ├── database/           # Database integration
+│   ├── websocket/         # WebSocket tests
+│   ├── collector/         # Collector integration
+│   └── writer/            # CSV writer integration
+│
+├── benchmarks/             # Performance benchmarks
+│
+└── conftest.py            # Shared fixtures
+```
 
 ## Running Tests
 
@@ -26,6 +44,44 @@ pip install -e ".[dev]"
 pytest
 ```
 
+### Run Unit Tests Only (Fast)
+
+```bash
+pytest tests/unit/ -v
+```
+
+### Run Integration Tests Only
+
+```bash
+pytest tests/integration/ -v
+```
+
+### Run Specific Category
+
+```bash
+# Core utilities
+pytest tests/unit/core/ -v
+
+# Database tests
+pytest tests/unit/database/ -v
+
+# Device integration tests
+pytest tests/integration/devices/ -v
+
+# Application integration tests
+pytest tests/integration/application/ -v
+```
+
+### Skip Integration Tests
+
+```bash
+# Skip all integration tests (run only unit tests)
+pytest -m "not integration" -v
+
+# Or use the directory structure
+pytest tests/unit/ -v
+```
+
 ### Run with Coverage
 
 ```bash
@@ -35,75 +91,92 @@ pytest --cov=ic256_sampler --cov-report=html
 ### Run Specific Test File
 
 ```bash
-pytest tests/test_utils.py
+pytest tests/unit/core/test_utils.py -v
 ```
 
 ### Run Specific Test
 
 ```bash
-pytest tests/test_utils.py::TestIsValidIPv4::test_valid_ipv4_addresses
+pytest tests/unit/core/test_utils.py::TestIsValidIPv4::test_valid_ipv4_addresses -v
 ```
 
-### Run Integration Tests (Requires Live Devices)
+## Test Categories
 
-```bash
-# Run integration tests with real devices from config.json
-pytest tests/test_integration.py -v
+### Unit Tests (`tests/unit/`)
 
-# Skip integration tests
-pytest -m "not integration"
-```
+Fast tests that don't require live devices or external dependencies:
 
-### Verbose Output
+- **core/**: Utility functions, device paths, models, config
+- **database/**: IODatabase and VirtualDatabase unit tests
+- **manager/**: DeviceManager unit tests (mocked)
+- **collector/**: Model collector unit tests
+- **writer/**: CSV writer unit tests
+- **application/**: Application class unit tests
 
-```bash
-pytest -v
-```
+### Integration Tests (`tests/integration/`)
+
+Tests that may require live devices or test full workflows:
+
+- **devices/**: Device connection and data collection rate tests
+- **application/**: End-to-end application workflows
+- **manager/**: DeviceManager with real devices
+- **database/**: Database integration with real data
+- **websocket/**: WebSocket persistence and connection status
+- **collector/**: Collector integration tests
+- **writer/**: CSV writer with real device data
+
+Integration tests will **skip** if devices are unreachable (not a failure).
 
 ## Test Coverage
 
-Current test coverage includes:
-
-### Utils Module (`test_utils.py`)
-- ✅ IPv4 address validation (valid, invalid, edge cases)
+### Core Module (`unit/core/`)
+- ✅ IPv4 address validation
 - ✅ Device validation with mocked HTTP requests
-- ✅ Error handling (connection errors, timeouts, HTTP errors)
-- ✅ Case-insensitive device matching
+- ✅ Device path configuration and helper functions
+- ✅ IC256Model conversion functions
+- ✅ Configuration management
+- ✅ MessagePack serialization
 
-### Device Paths Module (`test_device_paths.py`)
-- ✅ Path structure validation
-- ✅ Helper functions (get_ic256_45_path, get_tx2_path, get_admin_path)
-- ✅ HTTP URL building
-- ✅ Error handling for invalid categories/keys
+### Database Module (`unit/database/`)
+- ✅ IODatabase data structure
+- ✅ VirtualDatabase row generation
+- ✅ Channel policies (SYNCHRONIZED, INTERPOLATED, ASYNCHRONOUS)
+- ✅ Edge cases and performance
 
-### IC256 Model Module (`test_ic256_model.py`)
-- ✅ Mean value conversion (X/Y axis, invalid values)
-- ✅ Sigma value conversion (X/Y axis, invalid values)
-- ✅ IC256Model converter methods
-- ✅ Column definition creation
+### Device Manager (`unit/manager/`)
+- ✅ DeviceManager initialization
+- ✅ Device connection creation (mocked)
+- ✅ Data collection thread coordination
+- ✅ Thread lifecycle management
 
-### Device Manager Module (`test_device_manager.py`)
-- ✅ DeviceManager initialization and configuration
-- ✅ Device connection creation and management
-- ✅ **Critical: Data collection thread calls `updateSubscribedFields()`** (prevents regression)
-- ✅ Data collection from channels into IODatabase
-- ✅ Handling of empty datums, invalid timestamps, multiple channels
-- ✅ Thread coordination (start/stop/idempotent operations)
-- ✅ Integration tests with mocked websocket clients
-- ✅ Integration tests with real devices (requires live device)
-- ✅ Gaussian value processing
-- ✅ CSV header generation (IC256, TX2, unknown devices)
-- ✅ Time binning function
-- ✅ Sorted buffer cache (cache hits/misses, sorting)
+### Application (`unit/application/`)
+- ✅ Application initialization
+- ✅ GUI value handling
+- ✅ Sampling rate validation
+- ✅ Callback functions
 
-### Config Module (`test_config.py`)
-- ✅ Config file initialization (existing, missing, invalid JSON)
-- ✅ Config file updates (valid, invalid IPs, empty values)
-- ✅ Error handling (missing files, invalid JSON)
+### Integration Tests
+- ✅ Real device connections
+- ✅ Data collection at expected rates
+- ✅ End-to-end workflows
+- ✅ CSV file generation with real data
+- ✅ WebSocket persistence
+
+## Key Test Files
+
+### Critical Regression Tests
+
+1. **`unit/manager/test_device_manager.py::test_collect_from_device_calls_update_subscribed_fields`**
+   - Ensures data collection thread calls `updateSubscribedFields()`
+   - Prevents regression where collection thread doesn't process websocket messages
+
+2. **`integration/devices/test_data_collection_rate.py::test_ic256_sampling_rate_3000hz`**
+   - End-to-end verification of data collection at expected rates
+   - Catches issues in the full data collection pipeline
 
 ## Test Structure
 
-Tests are organized using pytest's class-based structure:
+Tests use pytest's class-based structure:
 
 ```python
 class TestFunctionName:
@@ -117,57 +190,22 @@ class TestFunctionName:
 
 ## Mocking
 
-Tests use `unittest.mock` for:
+Unit tests use `unittest.mock` for:
 - HTTP requests (device validation)
 - File I/O (configuration management)
 - Tkinter widgets (GUI components)
+- WebSocket clients (device manager tests)
 
-## Integration Tests
+## Integration Test Requirements
 
-Integration tests in `test_integration.py` use real device IPs from `config.json`:
+Integration tests in `tests/integration/` use real device IPs from `config.json`:
 - **IC256 Device**: Uses `ic256_45` IP from config.json
 - **TX2 Device**: Uses `tx2` IP from config.json
 
 These tests:
 - Will **skip** if devices are unreachable (not a failure)
 - Require network connectivity to test devices
-- Can be excluded with `pytest -m "not integration"`
-
-### Running Integration Tests
-
-```bash
-# Run only integration tests
-pytest tests/test_integration.py -v
-
-# Run all tests including integration
-pytest -v
-
-# Skip integration tests
-pytest -m "not integration" -v
-```
-
-## Key Test Coverage
-
-### Critical Regression Tests
-
-The following tests are particularly important for preventing regressions:
-
-1. **`test_device_manager.py::test_collect_from_device_calls_update_subscribed_fields`**
-   - **Purpose**: Ensures the data collection thread calls `updateSubscribedFields()`
-   - **Why Critical**: This bug caused complete data collection failure (only 1 row collected instead of thousands)
-   - **Prevents**: Regression where collection thread doesn't process websocket messages
-
-2. **`test_integration.py::test_ic256_sampling_rate_3000hz`**
-   - **Purpose**: End-to-end verification of data collection at expected rates
-   - **Why Critical**: Catches issues in the full data collection pipeline
-   - **Prevents**: Data collection rate problems, missing data, processing failures
-
-## Future Test Additions
-
-Areas that could benefit from additional tests:
-- GUI components (requires GUI testing framework)
-- WebSocket client error handling and reconnection scenarios
-- Main application flow end-to-end (full user workflows)
+- Can be excluded with `pytest -m "not integration"` or `pytest tests/unit/`
 
 ## Continuous Integration
 
@@ -181,3 +219,10 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --cov=ic256_sampler --cov-report=term-missing"
 ```
+
+## Notes
+
+- All test files import from `ic256_sampler.*` - imports remain unchanged
+- `conftest.py` fixtures are automatically available to all tests
+- Integration tests are marked with `@pytest.mark.integration`
+- See `REORGANIZATION_PLAN.md` for details on the reorganization

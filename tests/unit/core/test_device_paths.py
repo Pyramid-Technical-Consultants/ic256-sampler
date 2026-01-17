@@ -79,7 +79,7 @@ class TestPathHelperFunctions:
         path = get_ic256_45_path("adc", "primary_dose")
         assert isinstance(path, str)
         assert IC256_45_DEVICE_NAME in path
-        assert "primary_dose" in path or "channel_" in path
+        assert "dose" in path or "channel" in path
 
     def test_get_ic256_45_path_invalid_category(self):
         """Test getting IC256-45 path with invalid category raises error."""

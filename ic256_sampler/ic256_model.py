@@ -78,17 +78,17 @@ class IC256Model:
     @staticmethod
     def get_gaussian_x_sigma_converter() -> Converter:
         """Get converter for X sigma to millimeters."""
-        return lambda v: convert_sigma_ic256(v, x_axis=True)
+        return convert_sigma_ic256
     
     @staticmethod
     def get_gaussian_y_mean_converter() -> Converter:
         """Get converter for Y mean to millimeters."""
-        return lambda v: convert_mean_ic256(v, x_axis=False)
+        return lambda v: convert_mean_ic256(v, False)
     
     @staticmethod
     def get_gaussian_y_sigma_converter() -> Converter:
         """Get converter for Y sigma to millimeters."""
-        return lambda v: convert_sigma_ic256(v, x_axis=False)
+        return lambda v: convert_sigma_ic256(v, False)
     
     @staticmethod
     def create_columns(reference_channel: str) -> list[ColumnDefinition]:
@@ -131,19 +131,19 @@ class IC256Model:
                 policy=ChannelPolicy.SYNCHRONIZED,
                 converter=IC256Model.get_gaussian_y_sigma_converter(),
             ),
+
+            # Channel sum - synchronized (arrives with gaussian)
+            ColumnDefinition(
+                name="Channel Sum (nA)",
+                channel_path=IC256_45_PATHS["adc"]["channel_sum"],
+                policy=ChannelPolicy.SYNCHRONIZED,
+            ),
             
             # Primary dose - interpolated (may have different rate)
             ColumnDefinition(
-                name="Dose",
+                name="Dose (nA)",
                 channel_path=IC256_45_PATHS["adc"]["primary_dose"],
                 policy=ChannelPolicy.INTERPOLATED,
-            ),
-            
-            # Channel sum - synchronized (arrives with gaussian)
-            ColumnDefinition(
-                name="Channel Sum",
-                channel_path=IC256_45_PATHS["adc"]["channel_sum"],
-                policy=ChannelPolicy.SYNCHRONIZED,
             ),
             
             # External trigger - asynchronous (snap to nearest)
@@ -151,6 +151,13 @@ class IC256Model:
                 name="External trigger",
                 channel_path=IC256_45_PATHS["adc"]["gate_signal"],
                 policy=ChannelPolicy.ASYNCHRONOUS,
+            ),
+            
+            # High voltage readback - interpolated (slow updates)
+            ColumnDefinition(
+                name="High Voltage (V)",
+                channel_path=IC256_45_PATHS["high_voltage"]["monitor_voltage_internal"],
+                policy=ChannelPolicy.INTERPOLATED,
             ),
             
             # Environment channels - interpolated (slow updates)
@@ -218,6 +225,8 @@ class IC256Model:
             "primary_channel": IC256_45_PATHS["adc"]["primary_dose"],
             "channel_sum": IC256_45_PATHS["adc"]["channel_sum"],
             "external_trigger": IC256_45_PATHS["adc"]["gate_signal"],
+            # High voltage readback
+            "high_voltage": IC256_45_PATHS["high_voltage"]["monitor_voltage_internal"],
             # Environmental sensor channels (treated same as any other channel)
             "temperature": IC256_45_PATHS["environmental_sensor"]["temperature"],
             "humidity": IC256_45_PATHS["environmental_sensor"]["humidity"],

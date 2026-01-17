@@ -108,6 +108,9 @@ def capture_single_channel(
             # Store the data point
             captured_data.append((value, ts_ns))
         
+        # Clear datums after processing to avoid re-processing the same data
+        channel.clearDatums()
+        
         # Small sleep to avoid tight loop if data is coming fast
         time.sleep(0.001)
     
@@ -196,6 +199,9 @@ def capture_to_database(
                 
                 # Add to database
                 database.add_data_point(channel_path, value, ts_ns)
+            
+            # Clear datums after processing to avoid re-processing the same data
+            channel_field.clearDatums()
         
         # Small sleep to avoid tight loop
         time.sleep(0.001)

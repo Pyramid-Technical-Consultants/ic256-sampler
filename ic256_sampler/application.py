@@ -9,25 +9,16 @@ import time
 import atexit
 import signal
 from typing import Dict, Optional, Tuple, Any
-import requests
 from .gui import GUI
-from .ic256_model import IC256Model
-from .utils import is_valid_device
-from .device_paths import IC256_45_PATHS, build_http_url
-from .device_manager import (
-    DeviceManager,
-    IC256_CONFIG,
-    TX2_CONFIG,
-    get_timestamp_strings,
-)
-from .model_collector import ModelCollector, collect_data_with_model
+from .device_manager import DeviceManager, IC256_CONFIG, TX2_CONFIG
+from .model_collector import ModelCollector
+from .statistics_aggregator import StatisticsUpdater
 from .gui_helpers import (
     safe_gui_update,
     log_message_safe,
     show_message_safe,
     set_button_state_safe,
 )
-from .igx_client import IGXWebsocketClient
 
 # Application constants
 DEFAULT_SAMPLING_RATE: int = 500  # Hz
@@ -51,6 +42,7 @@ class Application:
         self.device_manager: Optional[DeviceManager] = None  # Single persistent device manager with connections
         self.collector_thread: Optional[threading.Thread] = None
         self.stats_thread: Optional[threading.Thread] = None  # Statistics update thread
+        self.stats_updater: Optional[StatisticsUpdater] = None  # Statistics updater
         self._stopping = False  # Flag to track if we're in stopping mode
         self._cleanup_registered = False  # Track if cleanup is registered
     
@@ -169,6 +161,12 @@ class Application:
         """Callback function for logging from device setup."""
         log_message_safe(self.window, message, level)
     
+    def _ensure_device_manager(self) -> None:
+        """Ensure device manager exists and is configured."""
+        if self.device_manager is None:
+            self.device_manager = DeviceManager()
+            self.device_manager.set_status_callback(self._connection_status_callback)
+    
     def _connection_status_callback(self, status_dict: Dict[str, str]) -> None:
         """Callback function for connection status updates from device manager.
         
@@ -196,116 +194,19 @@ class Application:
         
         ic256_ip, tx2_ip, _, _ = self._get_gui_values()
         
-        # Create device manager if it doesn't exist
-        if self.device_manager is None:
-            self.device_manager = DeviceManager()
-            # Set up connection status callback
-            self.device_manager.set_status_callback(self._connection_status_callback)
+        # Ensure device manager exists
+        self._ensure_device_manager()
         
         # Get default sampling rate
         sampling_rate = self._get_sampling_rate()
         
-        # Check and update IC256 connection
-        if ic256_ip:
-            with self.device_manager._lock:
-                needs_connection = (
-                    IC256_CONFIG.device_name not in self.device_manager.connections or
-                    self.device_manager.connections[IC256_CONFIG.device_name].ip_address != ic256_ip
-                )
-            
-            if needs_connection:
-                # Close old connection if IP changed
-                connection_removed = False
-                with self.device_manager._lock:
-                    if IC256_CONFIG.device_name in self.device_manager.connections:
-                        old_conn = self.device_manager.connections[IC256_CONFIG.device_name]
-                        try:
-                            if old_conn.thread.is_alive():
-                                old_conn.thread.join(timeout=1.0)
-                            old_conn.client.close()
-                        except Exception:
-                            pass
-                        del self.device_manager.connections[IC256_CONFIG.device_name]
-                        connection_removed = True
-                
-                # Notify status change after removing connection (outside lock)
-                if connection_removed:
-                    self.device_manager._notify_status_change()
-                
-                # Create new connection (but don't start collection yet)
-                self.device_manager.add_device(IC256_CONFIG, ic256_ip, sampling_rate, self._log_callback)
-        else:
-            # IC256 IP is empty - close and remove IC256 connection if it exists
-            connection_removed = False
-            with self.device_manager._lock:
-                if IC256_CONFIG.device_name in self.device_manager.connections:
-                    old_conn = self.device_manager.connections[IC256_CONFIG.device_name]
-                    try:
-                        # Stop any active collection threads
-                        if old_conn.thread.is_alive():
-                            old_conn.thread.join(timeout=1.0)
-                        # Close the websocket connection
-                        old_conn.client.close()
-                    except Exception:
-                        pass
-                    # Remove the connection
-                    del self.device_manager.connections[IC256_CONFIG.device_name]
-                    connection_removed = True
-            
-            # Notify status change after removing connection (outside lock)
-            if connection_removed:
-                self.device_manager._notify_status_change()
-        
-        # Check and update TX2 connection
-        if tx2_ip:
-            with self.device_manager._lock:
-                needs_connection = (
-                    TX2_CONFIG.device_name not in self.device_manager.connections or
-                    self.device_manager.connections[TX2_CONFIG.device_name].ip_address != tx2_ip
-                )
-            
-            if needs_connection:
-                # Close old connection if IP changed
-                connection_removed = False
-                with self.device_manager._lock:
-                    if TX2_CONFIG.device_name in self.device_manager.connections:
-                        old_conn = self.device_manager.connections[TX2_CONFIG.device_name]
-                        try:
-                            if old_conn.thread.is_alive():
-                                old_conn.thread.join(timeout=1.0)
-                            old_conn.client.close()
-                        except Exception:
-                            pass
-                        del self.device_manager.connections[TX2_CONFIG.device_name]
-                        connection_removed = True
-                
-                # Notify status change after removing connection (outside lock)
-                if connection_removed:
-                    self.device_manager._notify_status_change()
-                
-                # Create new connection (but don't start collection yet)
-                self.device_manager.add_device(TX2_CONFIG, tx2_ip, sampling_rate, self._log_callback)
-        else:
-            # TX2 IP is empty - close and remove TX2 connection if it exists
-            connection_removed = False
-            with self.device_manager._lock:
-                if TX2_CONFIG.device_name in self.device_manager.connections:
-                    old_conn = self.device_manager.connections[TX2_CONFIG.device_name]
-                    try:
-                        # Stop any active collection threads
-                        if old_conn.thread.is_alive():
-                            old_conn.thread.join(timeout=1.0)
-                        # Close the websocket connection
-                        old_conn.client.close()
-                    except Exception:
-                        pass
-                    # Remove the connection
-                    del self.device_manager.connections[TX2_CONFIG.device_name]
-                    connection_removed = True
-            
-            # Notify status change after removing connection (outside lock)
-            if connection_removed:
-                self.device_manager._notify_status_change()
+        # Use DeviceManager to ensure connections
+        self.device_manager.ensure_connections(
+            ic256_ip,
+            tx2_ip,
+            sampling_rate,
+            self._log_callback
+        )
     
     def _update_elapse_time(self) -> None:
         """Update elapsed time display in GUI."""
@@ -329,78 +230,33 @@ class Application:
         AND statistics have stabilized (no changes for a while). This ensures statistics
         are updated while data is being written to CSV after stop, and shows final values.
         """
-        consecutive_no_change = 0
-        previous_total_rows = 0
-        previous_total_size = 0
+        if not self.window:
+            return
         
-        while True:
-            # Continue updating if:
-            # 1. Not stopped yet, OR
-            # 2. We're in stopping mode and (collector thread is alive OR statistics are still changing)
-            collector_thread_alive = (
-                self.collector_thread and 
-                self.collector_thread.is_alive()
-            )
-            
-            should_continue = (
-                not self.stop_event.is_set() or
-                (self._stopping and collector_thread_alive)
-            )
-            
-            if self.window and self.device_statistics:
-                # Aggregate statistics across all devices
-                total_rows = sum(stats.get("rows", 0) for stats in self.device_statistics.values())
-                total_size = sum(stats.get("file_size", 0) for stats in self.device_statistics.values())
-                
-                # Check if statistics have changed
-                if self._stopping:
-                    if (total_rows == previous_total_rows and 
-                        total_size == previous_total_size):
-                        consecutive_no_change += 1
-                    else:
-                        consecutive_no_change = 0
-                        previous_total_rows = total_rows
-                        previous_total_size = total_size
-                    
-                    # If collector thread finished and statistics haven't changed for 15 updates (1.5 seconds), we're done
-                    if (not collector_thread_alive and 
-                        consecutive_no_change >= 15):
-                        # Final update before stopping
-                        if total_size < 1024:
-                            size_str = f"{total_size} B"
-                        elif total_size < 1024 * 1024:
-                            size_str = f"{total_size / 1024:.1f} KB"
-                        else:
-                            size_str = f"{total_size / (1024 * 1024):.1f} MB"
-                        
-                        safe_gui_update(
-                            self.window,
-                            lambda r=total_rows, s=size_str: self.window.update_statistics(r, s)
-                        )
-                        break
-                else:
-                    # Not in stopping mode, update previous values
-                    previous_total_rows = total_rows
-                    previous_total_size = total_size
-                
-                # Format file size
-                if total_size < 1024:
-                    size_str = f"{total_size} B"
-                elif total_size < 1024 * 1024:
-                    size_str = f"{total_size / 1024:.1f} KB"
-                else:
-                    size_str = f"{total_size / (1024 * 1024):.1f} MB"
-                
+        # Create statistics updater if it doesn't exist
+        if not self.stats_updater:
+            def update_callback(rows: int, size_str: str):
                 safe_gui_update(
                     self.window,
-                    lambda r=total_rows, s=size_str: self.window.update_statistics(r, s)
+                    lambda r=rows, s=size_str: self.window.update_statistics(r, s)
                 )
             
-            if not should_continue:
-                # Not in stopping mode and stop_event is set, exit
-                break
-            
-            time.sleep(TIME_UPDATE_INTERVAL)
+            self.stats_updater = StatisticsUpdater(
+                self.device_statistics,
+                update_callback,
+                TIME_UPDATE_INTERVAL
+            )
+        
+        # Update collector thread status
+        collector_thread_alive = (
+            self.collector_thread and 
+            self.collector_thread.is_alive()
+        )
+        self.stats_updater.set_collector_thread_alive(collector_thread_alive)
+        self.stats_updater.set_stopping(self._stopping)
+        
+        # Run update loop
+        self.stats_updater.update_loop(self.stop_event)
     
     def _device_thread(self) -> None:
         """Main device thread that sets up and starts data collection."""
@@ -420,160 +276,64 @@ class Application:
         safe_gui_update(self.window, self.window.reset_statistics)
         set_button_state_safe(self.window, "start_button", "disabled")
 
-        # Get timestamp and configuration
-        date, time_str = get_timestamp_strings()
+        # Get configuration
         sampling_rate = self._get_sampling_rate()
         ic256_ip, tx2_ip, note, save_folder = self._get_gui_values()
 
         # Ensure connections exist (creates or reuses existing connections)
         self._ensure_connections()
         
-        # Use the persistent device manager
-        device_manager = self.device_manager
+        # Get devices that should be added
+        devices_added = ModelCollector.get_devices_added(
+            self.device_manager,
+            ic256_ip,
+            tx2_ip
+        )
         
-        # CRITICAL: Set stop_event BEFORE calling stop() so stop() uses the correct event
-        device_manager.stop_event = self.stop_event
-        
-        # CRITICAL: Stop any previous acquisition to reset _running state
-        # This ensures start() will actually start the threads
-        device_manager.stop()
-        
-        # Clear the database for new acquisition
-        device_manager.clear_database()
-
-        # Check which devices are available (connections already exist)
-        devices_added = []
-        with device_manager._lock:
-            if ic256_ip and IC256_CONFIG.device_name in device_manager.connections:
-                devices_added.append(IC256_CONFIG.device_name)
-            if tx2_ip and TX2_CONFIG.device_name in device_manager.connections:
-                devices_added.append(TX2_CONFIG.device_name)
-        
-        # Update sampling rate on existing connections and create new threads
-        for device_name in devices_added:
-            with device_manager._lock:
-                connection = device_manager.connections[device_name]
-                # Update sampling rate
-                # Check if connection is still open before trying to setup
-                # The connection should remain open between acquisitions (keep-alive thread maintains it)
-                if connection.client.ws == "" or not connection.client.ws.connected:
-                    # Connection is actually closed - reconnect is necessary
-                    error_msg = f"Connection closed for {device_name}. Attempting reconnect..."
-                    log_message_safe(self.window, error_msg, "WARNING")
-                    print(f"Warning: {error_msg}")
-                    try:
-                        connection.client.reconnect()
-                    except Exception as reconnect_error:
-                        error_msg = f"Failed to reconnect {device_name}: {reconnect_error}"
-                        log_message_safe(self.window, error_msg, "ERROR")
-                        print(f"Error: {error_msg}")
-                        continue  # Skip this device
-                
-                try:
-                    connection.model.setup_device(connection.client, sampling_rate)
-                    # CRITICAL: setup_device() calls sendSubscribeFields() which REPLACES
-                    # the subscribedFields dictionary with only frequency fields, losing
-                    # all data channel subscriptions. We must re-subscribe to data channels.
-                    connection.client.sendSubscribeFields({
-                        field: True for field in connection.channels.values()
-                    })
-                except (ConnectionAbortedError, ConnectionResetError, OSError) as e:
-                    # Connection error during setup - only reconnect if connection is actually closed
-                    # Transient errors should not trigger reconnect (keep-alive thread handles those)
-                    error_msg = f"Connection error setting up {device_name}: {e}"
-                    log_message_safe(self.window, error_msg, "WARNING")
-                    print(f"Warning: {error_msg}")
-                    
-                    # Connection error during setup
-                    # Check if connection is actually closed before reconnecting
-                    # During normal stop/start cycles, connections should remain open
-                    # Only reconnect if connection is actually closed
-                    if connection.client.ws == "" or not connection.client.ws.connected:
-                        # Connection is actually closed - reconnect is necessary
-                        error_msg = f"Connection closed for {device_name}. Attempting reconnect..."
-                        log_message_safe(self.window, error_msg, "WARNING")
-                        print(f"Warning: {error_msg}")
-                        try:
-                            connection.client.reconnect()
-                            # Retry setup after reconnect
-                            connection.model.setup_device(connection.client, sampling_rate)
-                            # CRITICAL: After reconnect, we must re-subscribe to data channels
-                            # The reconnect creates a new websocket, so all subscriptions are lost
-                            connection.client.sendSubscribeFields({
-                                field: True for field in connection.channels.values()
-                            })
-                        except Exception as retry_error:
-                            # Reconnect failed - skip this device
-                            error_msg = f"Failed to reconnect {device_name}: {retry_error}"
-                            log_message_safe(self.window, error_msg, "ERROR")
-                            print(f"Error: {error_msg}")
-                            continue  # Skip this device
-                    else:
-                        # Connection is still open but setup failed - likely transient error
-                        # The keep-alive thread should handle reconnection if needed
-                        # For now, just log and try to continue with channel re-subscription
-                        print(f"Transient connection error for {device_name} during setup (connection still open). "
-                              f"Keep-alive thread will handle reconnection if needed.")
-                        # Try to re-subscribe to channels even if setup_device failed
-                        # This ensures data channels are subscribed even if frequency setup had issues
-                        try:
-                            connection.client.sendSubscribeFields({
-                                field: True for field in connection.channels.values()
-                            })
-                        except Exception:
-                            # If re-subscription also fails, the keep-alive thread will handle reconnection
-                            pass
-                
-                # Ensure old thread is stopped before creating new one
-                if connection.thread.is_alive():
-                    # Old thread is still running - wait for it to stop
-                    connection.thread.join(timeout=1.0)
-                
-                # Create new data collection thread for this acquisition
-                config = connection.config
-                thread = threading.Thread(
-                    target=device_manager._collect_from_device,
-                    name=f"{config.device_type.lower()}_device_{connection.ip_address}",
-                    daemon=True,
-                    args=(config, connection.client, connection.channels, connection.model, connection.field_to_path, connection.ip_address),
-                )
-                connection.thread = thread
-
         # Check if any devices were found
         if len(devices_added) == 0:
             error_msg = "No devices available for data collection. Please configure at least one device and ensure connections are established."
             show_message_safe(self.window, error_msg, "red")
             log_message_safe(self.window, "Data collection start failed: No valid devices found", "ERROR")
             log_message_safe(self.window, f"IC256 IP: {ic256_ip}, TX2 IP: {tx2_ip}", "INFO")
-            with device_manager._lock:
-                available_connections = list(device_manager.connections.keys())
+            with self.device_manager._lock:
+                available_connections = list(self.device_manager.connections.keys())
             log_message_safe(self.window, f"Available connections: {available_connections}", "INFO")
             set_button_state_safe(self.window, "start_button", "normal")
             return
-
-        # Create ModelCollector using the first device's model and reference channel
-        # For now, we'll use IC256 if available, otherwise TX2
-        primary_device_config = IC256_CONFIG if IC256_CONFIG.device_name in devices_added else TX2_CONFIG
-        primary_model = primary_device_config.model_creator()
-        reference_channel = primary_model.get_reference_channel()
         
-        file_name = f"{primary_device_config.filename_prefix}-{date}-{time_str}.csv"
-        file_path = f"{save_folder}/{file_name}"
-        
-        collector = ModelCollector(
-            device_manager=device_manager,
-            model=primary_model,
-            reference_channel=reference_channel,
-            sampling_rate=sampling_rate,
-            file_path=file_path,
-            device_name=primary_device_config.device_type.lower(),
-            note=note,
+        # Create collector using factory method
+        collector = ModelCollector.create_for_collection(
+            self.device_manager,
+            devices_added,
+            sampling_rate,
+            save_folder,
+            note,
+            self.device_statistics
         )
         
-        # Initialize statistics - reset to ensure clean state for new acquisition
-        # This ensures file size and row counts start at 0 for the new acquisition
-        self.device_statistics = {device: {"rows": 0, "file_size": 0, "file_path": ""} for device in devices_added}
-        collector.statistics = self.device_statistics.get(primary_device_config.device_name, {})
+        if not collector:
+            error_msg = "Failed to create collector"
+            show_message_safe(self.window, error_msg, "red")
+            log_message_safe(self.window, error_msg, "ERROR")
+            set_button_state_safe(self.window, "start_button", "normal")
+            return
+        
+        # Prepare devices for collection
+        if not collector.prepare_devices_for_collection(
+            devices_added,
+            sampling_rate,
+            self.stop_event,
+            lambda msg, level: log_message_safe(self.window, msg, level)
+        ):
+            error_msg = "Failed to prepare devices for collection"
+            show_message_safe(self.window, error_msg, "red")
+            log_message_safe(self.window, error_msg, "ERROR")
+            set_button_state_safe(self.window, "start_button", "normal")
+            return
+        
+        # Store collector
+        self.collector = collector
 
         # Show success message
         device_list_str = ", ".join(devices_added)
@@ -582,9 +342,6 @@ class Application:
         show_message_safe(self.window, f" {device_list_str} {verb} collecting.", "green")
         log_message_safe(self.window, f"Data collection started: {device_list_str}", "INFO")
         set_button_state_safe(self.window, "stop_button", "normal")
-
-        # Store collector (device_manager is already stored as persistent instance)
-        self.collector = collector
 
         # Start all threads
         time_thread = threading.Thread(
@@ -603,15 +360,14 @@ class Application:
         )
         self.stats_thread.start()
         
-        # Start ModelCollector thread (which starts DeviceManager)
-        collector_thread = threading.Thread(
-            target=collect_data_with_model,
+        # Start collection thread
+        self.collector_thread = threading.Thread(
+            target=collector.run_collection,
             name="model_collector",
             daemon=True,
-            args=(collector, self.stop_event),
+            args=(self.stop_event,),
         )
-        collector_thread.start()
-        self.collector_thread = collector_thread
+        self.collector_thread.start()
         
         log_message_safe(self.window, f"Started data collection: {device_list_str}", "INFO")
     
@@ -662,67 +418,11 @@ class Application:
     
     def _restore_fan_setting(self, ip_address: str) -> None:
         """Restore IC256 fan setting in a background thread."""
-        try:
-            url_fan_ic256 = build_http_url(ip_address, IC256_45_PATHS["io"]["fan_out"])
-            time.sleep(2.0)  # Delay to let device finish data collection cleanup
-            requests.put(url_fan_ic256, json=True, timeout=FAN_RESTORE_TIMEOUT)
-            log_message_safe(
-                self.window,
-                f"Fan setting restored: {IC256_45_PATHS['io']['fan_out']}",
-                "INFO"
+        if self.device_manager:
+            self.device_manager.restore_fan_setting(
+                ip_address,
+                lambda msg, level: log_message_safe(self.window, msg, level)
             )
-        except requests.exceptions.Timeout:
-            log_message_safe(
-                self.window,
-                "Fan restore timed out (device may be busy) - this is not critical",
-                "WARNING"
-            )
-        except requests.exceptions.RequestException as e:
-            log_message_safe(
-                self.window,
-                f"Fan restore failed (non-critical): {str(e)}",
-                "WARNING"
-            )
-        except Exception as e:
-            log_message_safe(self.window, f"Fan restore error (ignored): {str(e)}", "WARNING")
-    
-    def _wait_for_threads_and_cleanup(self, device_threads: Dict[str, threading.Thread]) -> None:
-        """Wait for data collection threads to finish and perform cleanup."""
-        device_names = list(device_threads.keys())
-        threads_finished = True
-        
-        # Wait for threads to finish
-        for device_name, thread in device_threads.items():
-            thread.join(timeout=THREAD_JOIN_TIMEOUT)
-            if thread.is_alive():
-                threads_finished = False
-                log_message_safe(
-                    self.window,
-                    f"Warning: {device_name} thread did not finish within timeout",
-                    "WARNING"
-                )
-        
-        if not threads_finished:
-            log_message_safe(
-                self.window,
-                "Some threads did not finish cleanly - data may be incomplete",
-                "WARNING"
-            )
-
-        device_list_str = ", ".join(device_names)
-        show_message_safe(self.window, f"Collection completed ({device_list_str})", "green")
-        log_message_safe(self.window, f"Data collection stopped: {device_list_str}", "INFO")
-
-        # Restore IC256 fan setting
-        ic256_ip, _, _, _ = self._get_gui_values()
-        if ic256_ip:
-            restore_thread = threading.Thread(
-                target=self._restore_fan_setting,
-                args=(ic256_ip,),
-                name="restore_fan_setting",
-                daemon=True
-            )
-            restore_thread.start()
     
     def stop_collection(self) -> None:
         """Stop data collection and cleanup resources.
@@ -797,37 +497,6 @@ class Application:
         show_message_safe(self.window, "Data collection stopped.", "blue")
         log_message_safe(self.window, "Data collection stopped and CSV write completed", "INFO")
     
-    def _setup_single_device(
-        self,
-        ip_address: str,
-        device_type: str,
-        sampling_rate: int,
-    ) -> Optional[IGXWebsocketClient]:
-        """Set up a single device for configuration.
-        
-        Returns:
-            Client if successful, None otherwise
-        """
-        if not ip_address or not is_valid_device(ip_address, device_type):
-            return None
-        
-        try:
-            log_message_safe(self.window, f"Setting up {device_type} device at {ip_address}", "INFO")
-            client = IGXWebsocketClient(ip_address)
-            device_name = "ic256_45" if device_type == "IC256" else "tx2"
-            # Set up device using model
-            if "ic256" in device_name.lower():
-                model = IC256Model()
-                model.setup_device(client, sampling_rate)
-            client.close()
-            log_message_safe(self.window, f"{device_type} device setup successful at {ip_address}", "INFO")
-            return client
-        except Exception as e:
-            error_msg = f"Failed to set up {device_type} at {ip_address}: {str(e)}"
-            show_message_safe(self.window, error_msg, "red")
-            log_message_safe(self.window, error_msg, "ERROR")
-            return None
-    
     def _setup_thread(self) -> None:
         """Set up device configuration in a separate thread."""
         if not self.window:
@@ -848,18 +517,28 @@ class Application:
             set_button_state_safe(self.window, "set_up_button", "normal", self.window.fail_image)
             return
 
-        # Set up devices
+        # Set up devices using DeviceManager
         ic256_ip, tx2_ip, _, _ = self._get_gui_values()
         devices_setup = []
         
+        # Create device manager if needed
+        if self.device_manager is None:
+            self.device_manager = DeviceManager()
+        
         if ic256_ip:
-            client = self._setup_single_device(ic256_ip, "IC256", sampling_rate)
+            client = self.device_manager.setup_single_device(
+                ic256_ip, "IC256", sampling_rate,
+                lambda msg, level: log_message_safe(self.window, msg, level)
+            )
             if client:
                 devices_setup.append("IC256")
         
         if tx2_ip:
             try:
-                client = self._setup_single_device(tx2_ip, "TX2", sampling_rate)
+                client = self.device_manager.setup_single_device(
+                    tx2_ip, "TX2", sampling_rate,
+                    lambda msg, level: log_message_safe(self.window, msg, level)
+                )
                 if client:
                     devices_setup.append("TX2")
             except Exception as e:

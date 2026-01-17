@@ -219,31 +219,14 @@ class DeviceManager:
     def stop(self) -> None:
         """Stop all device connections and data collection.
         
-        Note: This does NOT close the websocket connections - they are kept alive
-        for reuse between acquisitions. Connections persist for the entire program lifecycle.
-        
-        Note: This does NOT clear the database - the caller should clear it after
-        processing is complete to avoid losing data that's still being processed.
-        
-        This method is non-blocking - it signals threads to stop but does not wait
-        for them to finish. Threads will stop themselves when they see stop_event is set.
-        This prevents GUI freezing when called from the GUI thread.
+        Non-blocking method that signals threads to stop. Does not close connections
+        or clear the database - those are handled separately.
         """
         with self._lock:
             if not self._running:
                 return
-            
             self._running = False
             self.stop_event.set()
-            
-            # NOTE: We do NOT wait for threads to finish here (thread.join()).
-            # This method is called from the GUI thread via stop_collection(),
-            # and blocking here would freeze the UI, especially with large files.
-            # The threads will naturally stop when they see stop_event is set.
-            # The collector thread will handle waiting for data to be processed.
-            
-            # NOTE: Database is NOT cleared here - caller should clear it after
-            # processing is complete to avoid losing data that's still being processed
     
     def close_all_connections(self) -> None:
         """Close all websocket connections.
@@ -307,105 +290,74 @@ class DeviceManager:
         field_to_path: Dict[str, str],
         device_name: str,
     ) -> None:
-        """Keep-alive message loop that runs continuously to keep the connection active.
+        """Keep-alive message loop that runs continuously to keep the connection active."""
+        def _is_connection_error(e: Exception) -> bool:
+            """Check if exception is a connection-related error."""
+            error_str = str(e).lower()
+            error_type = type(e).__name__.lower()
+            keywords = ['connection', 'socket', 'network', 'timeout', 'broken', 'closed', 'abort', 'reset']
+            return any(kw in error_str or kw in error_type for kw in keywords)
         
-        This thread:
-        - Continuously calls updateSubscribedFields() to process incoming messages
-        - Keeps the websocket connection alive and exercised
-        - Processes messages even when not collecting (data is ignored outside collection)
-        - Updates connection status based on websocket health
+        def _update_status(new_status: str) -> bool:
+            """Update connection status and return True if it changed."""
+            with self._lock:
+                if device_name not in self.connections:
+                    return False
+                conn = self.connections[device_name]
+                with conn._status_lock:
+                    old_status = conn._connection_status
+                    if old_status != new_status:
+                        conn._connection_status = new_status
+                        return True
+            return False
         
-        Args:
-            client: The websocket client
-            channels: Dictionary of channel fields
-            field_to_path: Dictionary mapping field names to channel paths
-            device_name: Name of the device for status tracking
-        """
+        def _is_connection_valid() -> bool:
+            """Check if connection still exists and is valid."""
+            with self._lock:
+                if device_name not in self.connections:
+                    return False
+                conn = self.connections.get(device_name)
+                return conn and conn.client.ws != "" and conn.client.ws.connected
+        
         try:
             while True:
-                with self._lock:
-                    if device_name not in self.connections:
-                        break
-                    conn = self.connections.get(device_name)
-                    if not conn or conn.client.ws == "":
-                        break
+                if not _is_connection_valid():
+                    break
                 
                 try:
-                    is_connected = False
-                    try:
-                        if client.ws != "":
-                            client.updateSubscribedFields()
-                            is_connected = True
-                        else:
-                            is_connected = False
-                    except (ConnectionAbortedError, ConnectionResetError, OSError):
-                        is_connected = False
-                        break
-                    except Exception as e:
-                        error_str = str(e).lower()
-                        error_type = type(e).__name__.lower()
-                        if any(keyword in error_str or keyword in error_type for keyword in ['connection', 'socket', 'network', 'timeout', 'broken', 'closed', 'abort', 'reset']):
-                            is_connected = False
-                            break
-                        else:
-                            is_connected = True
-                    
-                    status_changed = False
-                    with self._lock:
-                        if device_name in self.connections:
-                            conn = self.connections[device_name]
-                            with conn._status_lock:
-                                old_status = conn._connection_status
-                                conn._connection_status = "connected" if is_connected else "disconnected"
-                                if old_status != conn._connection_status:
-                                    status_changed = True
-                    
-                    if status_changed:
-                        self._notify_status_change()
-                    
+                    if client.ws != "" and client.ws.connected:
+                        client.updateSubscribedFields()
+                        if _update_status("connected"):
+                            self._notify_status_change()
+                    else:
+                        if _update_status("disconnected"):
+                            self._notify_status_change()
                     time.sleep(0.001)
                     
                 except (ConnectionAbortedError, ConnectionResetError, OSError) as e:
-                    # Connection error in keep-alive thread - try to reconnect
-                    # This is the proper place to handle reconnection for persistent connections
-                    status_changed = False
-                    with self._lock:
-                        if device_name in self.connections:
-                            conn = self.connections[device_name]
-                            with conn._status_lock:
-                                old_status = conn._connection_status
-                                conn._connection_status = "error"
-                                if old_status != "error":
-                                    status_changed = True
-                    
-                    if status_changed:
+                    if _update_status("error"):
                         self._notify_status_change()
                     
-                    print(f"Connection error in keep-alive message loop: {e}. Attempting reconnect...")
+                    print(f"Connection error in keep-alive loop: {e}. Attempting reconnect...")
                     try:
-                        # Reconnect in keep-alive thread - this maintains the connection
                         client.reconnect()
-                        print(f"Successfully reconnected in keep-alive thread: {device_name}")
-                        # Update status back to connected
-                        with self._lock:
-                            if device_name in self.connections:
-                                conn = self.connections[device_name]
-                                with conn._status_lock:
-                                    conn._connection_status = "connected"
-                        self._notify_status_change()
-                        # Continue loop after successful reconnect
-                        time.sleep(0.1)  # Brief pause after reconnect
-                        continue
+                        print(f"Successfully reconnected: {device_name}")
+                        if _update_status("connected"):
+                            self._notify_status_change()
+                        time.sleep(0.1)
                     except Exception as reconnect_error:
-                        print(f"Failed to reconnect in keep-alive thread: {device_name}, error: {reconnect_error}")
-                        # If reconnect fails, break the loop (connection is truly broken)
+                        print(f"Failed to reconnect: {device_name}, error: {reconnect_error}")
                         break
                 except Exception as e:
-                    print(f"Error in keep-alive message loop: {e}")
+                    if _is_connection_error(e):
+                        if _update_status("disconnected"):
+                            self._notify_status_change()
+                        break
+                    print(f"Error in keep-alive loop: {e}")
                     time.sleep(0.1)
                     
         except Exception as e:
-            print(f"Fatal error in keep-alive message loop: {e}")
+            print(f"Fatal error in keep-alive loop: {e}")
             import traceback
             traceback.print_exc()
     
@@ -448,6 +400,279 @@ class DeviceManager:
                 for name, conn in self.connections.items()
             }
     
+    def _remove_connection(self, device_name: str) -> bool:
+        """Remove a device connection.
+        
+        Args:
+            device_name: Name of the device to remove
+            
+        Returns:
+            True if a connection was removed, False otherwise
+        """
+        with self._lock:
+            if device_name not in self.connections:
+                return False
+            
+            old_conn = self.connections[device_name]
+            try:
+                if old_conn.thread.is_alive():
+                    old_conn.thread.join(timeout=1.0)
+                old_conn.client.close()
+            except Exception:
+                pass
+            del self.connections[device_name]
+            return True
+    
+    def _ensure_device_connection(
+        self,
+        config: DeviceConfig,
+        ip_address: Optional[str],
+        sampling_rate: int,
+        log_callback: Optional[Callable[[str, str], None]] = None,
+    ) -> None:
+        """Ensure a device connection exists with the given IP address.
+        
+        Args:
+            config: Device configuration
+            ip_address: IP address (None or empty to remove connection)
+            sampling_rate: Sampling rate in Hz
+            log_callback: Optional callback for logging (message, level)
+        """
+        if ip_address:
+            with self._lock:
+                needs_connection = (
+                    config.device_name not in self.connections or
+                    self.connections[config.device_name].ip_address != ip_address
+                )
+            
+            if needs_connection:
+                # Remove old connection if it exists
+                if self._remove_connection(config.device_name):
+                    self._notify_status_change()
+                
+                # Create new connection
+                self.add_device(config, ip_address, sampling_rate, log_callback)
+        else:
+            # IP is empty - remove connection if it exists
+            if self._remove_connection(config.device_name):
+                self._notify_status_change()
+    
+    def ensure_connections(
+        self,
+        ic256_ip: Optional[str],
+        tx2_ip: Optional[str],
+        sampling_rate: int,
+        log_callback: Optional[Callable[[str, str], None]] = None,
+    ) -> None:
+        """Ensure websocket connections exist for configured devices.
+        
+        Creates connections if they don't exist, or updates them if IPs changed.
+        Connections persist for the entire program lifecycle.
+        
+        Args:
+            ic256_ip: IC256 IP address (None or empty to remove connection)
+            tx2_ip: TX2 IP address (None or empty to remove connection)
+            sampling_rate: Sampling rate in Hz
+            log_callback: Optional callback for logging (message, level)
+        """
+        self._ensure_device_connection(IC256_CONFIG, ic256_ip, sampling_rate, log_callback)
+        self._ensure_device_connection(TX2_CONFIG, tx2_ip, sampling_rate, log_callback)
+    
+    def _ensure_connection_open(self, connection: DeviceConnection, device_name: str, log_callback: Optional[Callable[[str, str], None]]) -> bool:
+        """Ensure a device connection is open, reconnecting if necessary.
+        
+        Args:
+            connection: Device connection to check
+            device_name: Name of the device (for logging)
+            log_callback: Optional callback for logging
+            
+        Returns:
+            True if connection is open, False otherwise
+        """
+        if connection.client.ws != "" and connection.client.ws.connected:
+            return True
+        
+        # Connection is closed - attempt reconnect
+        error_msg = f"Connection closed for {device_name}. Attempting reconnect..."
+        if log_callback:
+            log_callback(error_msg, "WARNING")
+        print(f"Warning: {error_msg}")
+        
+        try:
+            connection.client.reconnect()
+            return True
+        except Exception as reconnect_error:
+            error_msg = f"Failed to reconnect {device_name}: {reconnect_error}"
+            if log_callback:
+                log_callback(error_msg, "ERROR")
+            print(f"Error: {error_msg}")
+            return False
+    
+    def _setup_device_and_resubscribe(self, connection: DeviceConnection, sampling_rate: int) -> bool:
+        """Set up device and re-subscribe to data channels.
+        
+        Args:
+            connection: Device connection
+            sampling_rate: Sampling rate in Hz
+            
+        Returns:
+            True if setup succeeded, False otherwise
+        """
+        try:
+            connection.model.setup_device(connection.client, sampling_rate)
+            # CRITICAL: setup_device() calls sendSubscribeFields() which REPLACES
+            # the subscribedFields dictionary with only frequency fields, losing
+            # all data channel subscriptions. We must re-subscribe to data channels.
+            connection.client.sendSubscribeFields({
+                field: True for field in connection.channels.values()
+            })
+            return True
+        except Exception:
+            return False
+    
+    def setup_device_for_collection(
+        self,
+        device_name: str,
+        sampling_rate: int,
+        log_callback: Optional[Callable[[str, str], None]] = None,
+    ) -> bool:
+        """Set up a device for data collection (setup_device and re-subscribe channels).
+        
+        Args:
+            device_name: Name of the device to set up
+            sampling_rate: Sampling rate in Hz
+            log_callback: Optional callback for logging (message, level)
+            
+        Returns:
+            True if setup succeeded, False otherwise
+        """
+        with self._lock:
+            if device_name not in self.connections:
+                if log_callback:
+                    log_callback(f"Device {device_name} not found in connections", "ERROR")
+                return False
+            connection = self.connections[device_name]
+        
+        # Ensure connection is open
+        if not self._ensure_connection_open(connection, device_name, log_callback):
+            return False
+        
+        # Try to setup device
+        if self._setup_device_and_resubscribe(connection, sampling_rate):
+            return True
+        
+        # Setup failed - check if connection is still open
+        if connection.client.ws == "" or not connection.client.ws.connected:
+            # Connection closed during setup - try reconnect and retry
+            if not self._ensure_connection_open(connection, device_name, log_callback):
+                return False
+            return self._setup_device_and_resubscribe(connection, sampling_rate)
+        else:
+            # Connection still open but setup failed - try to re-subscribe anyway
+            # (keep-alive thread will handle reconnection if needed)
+            print(f"Transient connection error for {device_name} during setup (connection still open). "
+                  f"Keep-alive thread will handle reconnection if needed.")
+            try:
+                connection.client.sendSubscribeFields({
+                    field: True for field in connection.channels.values()
+                })
+                return True
+            except Exception:
+                return False
+    
+    def setup_single_device(
+        self,
+        ip_address: str,
+        device_type: str,
+        sampling_rate: int,
+        log_callback: Optional[Callable[[str, str], None]] = None,
+    ) -> bool:
+        """Set up a single device for configuration (standalone, not for collection).
+        
+        This is used for the "Apply" button setup, not for data collection.
+        
+        Args:
+            ip_address: IP address of the device
+            device_type: Device type ("IC256" or "TX2")
+            sampling_rate: Sampling rate in Hz
+            log_callback: Optional callback for logging (message, level)
+            
+        Returns:
+            True if setup succeeded, False otherwise
+        """
+        from .utils import is_valid_device
+        from .ic256_model import IC256Model
+        
+        if not ip_address or not is_valid_device(ip_address, device_type):
+            return False
+        
+        client = None
+        try:
+            if log_callback:
+                log_callback(f"Setting up {device_type} device at {ip_address}", "INFO")
+            client = IGXWebsocketClient(ip_address)
+            # Set up device using model
+            if device_type == "IC256":
+                model = IC256Model()
+                model.setup_device(client, sampling_rate)
+            if log_callback:
+                log_callback(f"{device_type} device setup successful at {ip_address}", "INFO")
+            return True
+        except Exception as e:
+            error_msg = f"Failed to set up {device_type} at {ip_address}: {str(e)}"
+            if log_callback:
+                log_callback(error_msg, "ERROR")
+            print(error_msg)
+            return False
+        finally:
+            if client:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+    
+    def restore_fan_setting(
+        self,
+        ip_address: str,
+        log_callback: Optional[Callable[[str, str], None]] = None,
+        timeout: float = 20.0,
+    ) -> None:
+        """Restore IC256 fan setting in a background thread.
+        
+        Args:
+            ip_address: IP address of the IC256 device
+            log_callback: Optional callback for logging (message, level)
+            timeout: Timeout for HTTP request in seconds
+        """
+        import requests
+        from .device_paths import IC256_45_PATHS, build_http_url
+        import time
+        
+        try:
+            url_fan_ic256 = build_http_url(ip_address, IC256_45_PATHS["io"]["fan_out"])
+            time.sleep(2.0)  # Delay to let device finish data collection cleanup
+            requests.put(url_fan_ic256, json=True, timeout=timeout)
+            if log_callback:
+                log_callback(
+                    f"Fan setting restored: {IC256_45_PATHS['io']['fan_out']}",
+                    "INFO"
+                )
+        except requests.exceptions.Timeout:
+            if log_callback:
+                log_callback(
+                    "Fan restore timed out (device may be busy) - this is not critical",
+                    "WARNING"
+                )
+        except requests.exceptions.RequestException as e:
+            if log_callback:
+                log_callback(
+                    f"Fan restore failed (non-critical): {str(e)}",
+                    "WARNING"
+                )
+        except Exception as e:
+            if log_callback:
+                log_callback(f"Fan restore error (ignored): {str(e)}", "WARNING")
+    
     def _collect_from_device(
         self,
         config: DeviceConfig,
@@ -457,28 +682,16 @@ class DeviceManager:
         field_to_path: Dict[str, str],
         ip_address: str,
     ) -> None:
-        """Collect data from a single device into the shared IODatabase.
-        
-        This is the thread target for each device connection during active collection.
-        This thread calls updateSubscribedFields() to process incoming messages and
-        then collects data from the channels. The keep-alive thread also calls
-        updateSubscribedFields() to keep the connection alive, but both threads
-        can safely call it as the websocket handles message queuing.
-        """
+        """Collect data from a single device into the shared IODatabase."""
         first_timestamp: Optional[int] = None
         
         try:
             while not self.stop_event.is_set():
-                # Process incoming messages to fill channel datums
-                # This is safe to call from multiple threads as the websocket
-                # handles message queuing and the field.update() method is thread-safe
                 try:
                     client.updateSubscribedFields()
                 except Exception as e:
-                    # If update fails, log and continue - keep-alive thread will handle reconnection
-                    print(f"Warning: updateSubscribedFields failed in collection thread: {e}")
+                    print(f"Warning: updateSubscribedFields failed: {e}")
                 
-                # Collect data from all channels
                 first_timestamp = self._collect_all_channel_data(
                     channels, field_to_path, first_timestamp
                 )
@@ -535,11 +748,9 @@ class DeviceManager:
                     ts_raw = data_point[1]
                     
                     try:
+                        # Convert timestamp to nanoseconds
                         if isinstance(ts_raw, float):
-                            if ts_raw < 1e12:
-                                ts_ns = int(ts_raw * 1e9)
-                            else:
-                                ts_ns = int(ts_raw)
+                            ts_ns = int(ts_raw * 1e9 if ts_raw < 1e12 else ts_raw)
                         elif isinstance(ts_raw, int):
                             ts_ns = ts_raw
                         else:
@@ -556,9 +767,6 @@ class DeviceManager:
                     with self._lock:
                         for ch_path, val, ts in points_to_add:
                             self.io_database.add_data_point(ch_path, val, ts)
-                    
-                    # Clear datums after processing to avoid re-reading the same data
-                    # This is safe because we've already processed all the data points
                     channel.clearDatums()
                         
             except Exception as e:
@@ -579,6 +787,7 @@ def create_ic256_channels(client: IGXWebsocketClient) -> Dict[str, Any]:
         "primary_channel": client.field(IC256_45_PATHS["adc"]["primary_dose"]),
         "channel_sum": client.field(IC256_45_PATHS["adc"]["channel_sum"]),
         "external_trigger": client.field(IC256_45_PATHS["adc"]["gate_signal"]),
+        "high_voltage": client.field(IC256_45_PATHS["high_voltage"]["monitor_voltage_internal"]),
         "temperature": client.field(IC256_45_PATHS["environmental_sensor"]["temperature"]),
         "humidity": client.field(IC256_45_PATHS["environmental_sensor"]["humidity"]),
         "pressure": client.field(IC256_45_PATHS["environmental_sensor"]["pressure"]),

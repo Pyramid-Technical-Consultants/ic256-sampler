@@ -3,9 +3,7 @@
 import websocket
 import time
 import msgpack
-from pprint import pprint
 import requests
-import threading
 
 
 # usage
@@ -30,19 +28,17 @@ class IGXField:
         time.sleep(0.2)
         self.setValue(False)
 
-    # extract this field data from message
     def get(self, message):
-        if "data" in message:
-            data = message["data"]
-            if self.path in data:
-                return data[self.path]
+        """Extract this field data from message."""
+        if "data" not in message:
             return []
-        return []
+        data = message["data"]
+        return data.get(self.path, [])
 
     def update(self, message):
         self.datums = self.get(message)
-        if len(self.datums) > 0:
-            self.datum = self.datums[-1]  # last element
+        if self.datums:
+            self.datum = self.datums[-1]
 
     def getDatums(self):
         return self.datums
@@ -91,22 +87,22 @@ class IGXIO:
         return self.valueField
 
     def getValue(self):
-        return self.getValueField().getValue()
+        return self.valueField.getValue()
 
     def setValue(self, value):
-        return self.getValueField().setValue(value)
+        return self.valueField.setValue(value)
 
     def getTime(self, message):
-        return self.getValueField().getTime()
+        return self.valueField.getTime()
 
     def isNull(self):
-        return self.getValueField().isNull()
+        return self.valueField.isNull()
 
     def isEqual(self, v):
-        return self.getValueField().isEqual(v)
+        return self.valueField.isEqual(v)
 
     def isNotEqual(self, v):
-        return self.getValueField().isNotEqual(v)
+        return self.valueField.isNotEqual(v)
 
     def expectEqual(self, v):
         if self.isNotEqual(v):
@@ -132,9 +128,6 @@ class IGXIO:
 
 
 class ButtonIO(IGXIO):
-    def __init__(self, client, path):
-        super().__init__(client, path)
-
     def toggle(self):
         self.valueField.toggle()
 
@@ -142,10 +135,10 @@ class ButtonIO(IGXIO):
 class UploadIO(ButtonIO):
     def __init__(self, client, path, target=""):
         super().__init__(client, path)
-        self.target = "http://" + client.getHostIP() + target
+        self.target = f"http://{client.getHostIP()}{target}"
 
     def setTarget(self, target):
-        self.target = "http://" + super().client.getHostIP() + target
+        self.target = f"http://{self.valueField.client.getHostIP()}{target}"
 
     def upload(self, filePath):
         with open(filePath, "rb") as file:
@@ -158,97 +151,48 @@ class IGXWebsocketClient:
     def __init__(self, ip=""):
         self.ip = ip
         self.subscribedFields = {}
-        if ip == "":
-            self.ws = ""
-        else:
-            # Try MessagePack subprotocol ("mpack") first, fall back to regular WebSocket if not supported
-            try:
-                self.ws = websocket.create_connection(
-                    "ws://" + self.ip,
-                    subprotocols=["mpack"]
-                )
-            except (websocket.WebSocketException, ValueError, OSError):
-                # Server doesn't support MessagePack subprotocol, use regular WebSocket
-                # We can still send MessagePack as binary frames without subprotocol negotiation
-                self.ws = websocket.create_connection("ws://" + self.ip)
+        self.ws = self._create_connection() if ip else ""
+    
+    def _create_connection(self):
+        """Create websocket connection, trying MessagePack subprotocol first."""
+        try:
+            return websocket.create_connection(
+                f"ws://{self.ip}",
+                subprotocols=["mpack"],
+                timeout=5
+            )
+        except (websocket.WebSocketException, ValueError, OSError):
+            return websocket.create_connection(f"ws://{self.ip}", timeout=5)
 
     def sendEventData(self, event, data=None):
-        if self.ws == "":
+        if not self.ws or not self.ws.connected:
             return
 
-        if self.ws.connected:
-            try:
-                message = {"event": event, "data": data}
-                packed = msgpack.packb(message, use_bin_type=True)
-                # Send as binary frame (MessagePack is binary)
-                # websocket-client automatically sends bytes as binary frames
-                self.ws.send(packed)
-            except (ConnectionAbortedError, ConnectionResetError, OSError) as e:
-                # Connection error during send
-                # During normal stop/start cycles, connections should remain open.
-                # The keep-alive thread maintains the connection, so errors here are likely transient
-                # or the connection is actually broken. We should be conservative about reconnecting
-                # to avoid unnecessary connection churn during stop/start cycles.
-                
-                # Check if connection is actually closed (not just in a bad state)
-                connection_closed = not self.ws.connected
-                
-                if connection_closed:
-                    # Connection is actually closed - reconnect is necessary
-                    # This should be rare during normal operation (keep-alive thread should prevent this)
-                    print(f"Connection closed during send: {e}. Attempting reconnect: {self.ip}")
-                    try:
-                        self.reconnect()
-                        # Try sending again after reconnect
-                        if self.ws.connected:
-                            message = {"event": event, "data": data}
-                            packed = msgpack.packb(message, use_bin_type=True)
-                            self.ws.send(packed)
-                    except (ConnectionAbortedError, ConnectionResetError, OSError) as retry_error:
-                        print(f"Failed to send after reconnect: {self.ip}, error: {retry_error}")
-                else:
-                    # Connection error but connection still reports as connected
-                    # This might be a transient error or the connection is in a bad state
-                    # Don't automatically reconnect - let the keep-alive thread handle it
-                    # During normal stop/start cycles, we want to keep connections open
-                    # Log the error but don't fail - the keep-alive thread will maintain the connection
-                    print(f"Connection error during send (connection still reports as connected): {e}. "
-                          f"Keep-alive thread will handle reconnection if needed.")
-                    # Don't reconnect or re-raise - just log and return
-                    # The keep-alive thread will detect the issue and reconnect if necessary
-                    # This prevents unnecessary reconnects during stop/start cycles
-        else:
-            # Connection is not connected
-            # During normal stop/start cycles, the keep-alive thread should maintain the connection
-            # Only reconnect if connection is actually closed (not just in a transient state)
-            # The keep-alive thread will handle reconnection for persistent connections
-            if self.ws != "":
-                # Connection exists but is not connected - this might be transient
-                # Let the keep-alive thread handle reconnection to avoid unnecessary reconnects
-                # during stop/start cycles
-                print(f"Connection not connected (keep-alive thread will handle reconnection if needed): {self.ip}")
-                # Don't automatically reconnect here - let keep-alive thread handle it
-                # This prevents unnecessary reconnects during normal stop/start cycles
+        try:
+            message = {"event": event, "data": data}
+            packed = msgpack.packb(message, use_bin_type=True)
+            self.ws.send(packed)
+        except (ConnectionAbortedError, ConnectionResetError, OSError):
+            if not self.ws.connected:
+                try:
+                    self.reconnect()
+                    if self.ws.connected:
+                        message = {"event": event, "data": data}
+                        packed = msgpack.packb(message, use_bin_type=True)
+                        self.ws.send(packed)
+                except Exception:
+                    pass  # Keep-alive thread will handle reconnection
 
     def sendSubscribeEvent(self, fields):
         self.sendEventData("subscribe", {key: False for key in fields.keys()})
 
     def sendSubscribeFields(self, fields):
         self.subscribedFields = fields
-
-        field_data = {}
-        for f, b in fields.items():
-            field_data[f"{f.getPath()}"] = b
-
+        field_data = {f.getPath(): b for f, b in fields.items()}
         self.sendEventData("subscribe", field_data)
 
     def sendSubscribeIOs(self, ios):
-
-        fields = {}
-
-        for io, b in ios.items():
-            fields[io.getValueField()] = b
-
+        fields = {io.getValueField(): b for io, b in ios.items()}
         self.sendSubscribeFields(fields)
 
     def sendGetEventMessage(self):
@@ -259,32 +203,26 @@ class IGXWebsocketClient:
 
     def waitRecv(self):
         """Wait for and receive a message from the websocket."""
-        if self.ws == "":
+        if not self.ws:
             return {}
 
         try:
             dm = self.ws.recv()
-            # MessagePack messages are binary
             if isinstance(dm, bytes):
                 m = msgpack.unpackb(dm, raw=False)
             elif isinstance(dm, str):
-                # If we get text, try to decode as MessagePack (shouldn't happen with MessagePack protocol)
                 m = msgpack.unpackb(dm.encode('latin1'), raw=False)
             else:
                 return {}
             
-            if isinstance(m, dict) and bool(m):
-                return m
-            else:
-                return {}
+            return m if isinstance(m, dict) and m else {}
+        except (websocket.WebSocketTimeoutException, TimeoutError, OSError):
+            return {}
         except Exception as e:
-            # Catch all exceptions including MessagePack unpack errors
-            # (msgpack.exceptions may not be available in all versions)
             print(f"error: msgpack.unpack - {type(e).__name__}: {str(e)}")
             return {}
 
     def getAndWaitReponse(self):
-
         self.sendGetEventMessage()
         return self.waitRecv()
 
@@ -297,36 +235,23 @@ class IGXWebsocketClient:
         self.updateSubscribedFields()
 
     def reconnect(self):
-        """Reconnect to the websocket.
-        
-        This closes the existing connection and creates a new one.
-        Should only be called when the connection is actually broken,
-        not during normal stop/start cycles.
-        """
-        # Close existing connection if it exists
-        if self.ws != "":
+        """Reconnect to the websocket and re-subscribe to fields."""
+        if self.ws:
             try:
                 self.ws.close()
             except Exception:
-                pass  # Ignore errors when closing old connection
+                pass
         
-        # Try MessagePack subprotocol ("mpack") first, fall back to regular WebSocket if not supported
-        try:
-            self.ws = websocket.create_connection(
-                "ws://" + self.ip,
-                subprotocols=["mpack"]
-            )
-        except (websocket.WebSocketException, ValueError, OSError):
-            # Server doesn't support MessagePack subprotocol, use regular WebSocket
-            # We can still send MessagePack as binary frames without subprotocol negotiation
-            self.ws = websocket.create_connection("ws://" + self.ip)
-        
-        # Re-subscribe to all previously subscribed fields
+        self.ws = self._create_connection()
         if self.subscribedFields:
             self.sendSubscribeFields(self.subscribedFields)
 
     def close(self):
-        self.ws.close()
+        if self.ws:
+            try:
+                self.ws.close()
+            except Exception:
+                pass
 
     def getHostIP(self):
         return self.ip
@@ -346,10 +271,9 @@ class IGXWebsocketClient:
     def uploadIO(self, path, target=""):
         return UploadIO(self, path, target)
 
-    # duration < 0: run forever
     def startCollect(self, delay, duration, fields, onMessage):
-
-        print("Starting collection at", self.ip, " for", duration, "seconds")
+        """Start data collection. If duration < 0, run forever."""
+        print(f"Starting collection at {self.ip} for {duration} seconds")
 
         self.sendSubscribeEvent(fields)
         self.sendGetEventMessage()
@@ -357,7 +281,7 @@ class IGXWebsocketClient:
 
         while duration > 0 and time.time() - start < duration:
             response = self.waitRecv()
-            onMessage(response["event"], response["data"])
+            onMessage(response.get("event"), response.get("data"))
             time.sleep(delay)
             self.sendGetEventMessage()
 

@@ -1,10 +1,6 @@
-"""Integration tests that require live device connections.
+"""Integration tests for data collection rate verification.
 
-These tests use real device IPs from config.json and will only pass
-if devices are available and reachable on the network.
-
-Run with: pytest tests/test_integration.py -v
-Skip with: pytest -m "not integration"
+These tests verify that data collection happens at the expected sampling rates.
 """
 
 import pytest
@@ -14,70 +10,14 @@ import csv
 from pathlib import Path
 from datetime import datetime
 from ic256_sampler.utils import is_valid_device, is_valid_ipv4
-from ic256_sampler.igx_client import IGXWebsocketClient
-from ic256_sampler.device_manager import DeviceManager, DeviceConfig, IC256_CONFIG
+from ic256_sampler.device_manager import DeviceManager, IC256_CONFIG
 from ic256_sampler.model_collector import ModelCollector, collect_data_with_model
 from ic256_sampler.ic256_model import IC256Model
-from ic256_sampler.device_paths import IC256_45_PATHS
+from ic256_sampler.virtual_database import ChannelPolicy
 
 
 # Mark all tests in this file as integration tests
 pytestmark = pytest.mark.integration
-
-
-class TestDeviceConnection:
-    """Integration tests for device connectivity."""
-
-    def test_ic256_device_validation_real(self, ic256_ip):
-        """Test IC256 device validation with real device from config.json.
-        
-        This test requires:
-        - A live IC256 device at the IP in config.json
-        - Network connectivity to that device
-        """
-        # Skip if IP is invalid (e.g., default/placeholder)
-        if not is_valid_ipv4(ic256_ip):
-            pytest.skip(f"Invalid IP address in config: {ic256_ip}")
-        
-        # Try to validate the device
-        result = is_valid_device(ic256_ip, "IC256")
-        
-        # If device is not reachable, skip rather than fail
-        # (device might be offline, which is not a test failure)
-        if not result:
-            pytest.skip(f"IC256 device at {ic256_ip} is not reachable or not responding")
-        
-        assert result is True
-
-    def test_tx2_device_validation_real(self, tx2_ip):
-        """Test TX2 device validation with real device from config.json.
-        
-        This test requires:
-        - A live TX2 device at the IP in config.json
-        - Network connectivity to that device
-        """
-        # Skip if IP is invalid (e.g., default/placeholder)
-        if not is_valid_ipv4(tx2_ip):
-            pytest.skip(f"Invalid IP address in config: {tx2_ip}")
-        
-        # Try to validate the device
-        result = is_valid_device(tx2_ip, "TX2")
-        
-        # If device is not reachable, skip rather than fail
-        # (device might be offline, which is not a test failure)
-        if not result:
-            pytest.skip(f"TX2 device at {tx2_ip} is not reachable or not responding")
-        
-        assert result is True
-
-    def test_device_ips_from_config(self, device_config, ic256_ip, tx2_ip):
-        """Test that device IPs are correctly loaded from config.json."""
-        assert "ic256_45" in device_config
-        assert "tx2" in device_config
-        assert is_valid_ipv4(ic256_ip)
-        assert is_valid_ipv4(tx2_ip)
-        assert ic256_ip == device_config["ic256_45"]
-        assert tx2_ip == device_config["tx2"]
 
 
 class TestDataCollectionRate:
@@ -128,7 +68,6 @@ class TestDataCollectionRate:
             pytest.skip(f"Failed to add IC256 device at {ic256_ip}")
         
         # Create model and get reference channel
-        from ic256_sampler.ic256_model import IC256Model
         model = IC256Model()
         reference_channel = model.get_reference_channel()
         
@@ -167,13 +106,10 @@ class TestDataCollectionRate:
         device_manager.stop()  # Also stop DeviceManager explicitly
         
         # Wait for collector thread to finish processing all data
-        # The collector will continue processing until all data is written
-        # For 3000 Hz at 5 seconds = 15000 rows, allow plenty of time
-        collection_thread.join(timeout=120.0)  # Longer timeout for final processing
+        collection_thread.join(timeout=120.0)
         
         # Verify thread finished
         if collection_thread.is_alive():
-            # Thread didn't finish - give it more time
             print("Warning: Collector thread still processing, waiting longer...")
             time.sleep(5.0)
             collection_thread.join(timeout=30.0)
@@ -185,15 +121,14 @@ class TestDataCollectionRate:
         row_count = 0
         with open(test_file, 'r', newline='') as f:
             reader = csv.reader(f)
-            # Skip header row
-            next(reader, None)
+            next(reader, None)  # Skip header
             for row in reader:
-                if row:  # Skip empty rows
+                if row:
                     row_count += 1
         
         # Verify row count
-        min_expected = int(expected_rows * (1 - tolerance))  # 13,500 rows (90%)
-        max_expected = int(expected_rows * (1 + tolerance))  # 16,500 rows (110%)
+        min_expected = int(expected_rows * (1 - tolerance))
+        max_expected = int(expected_rows * (1 + tolerance))
         
         print(f"\nCollection Results:")
         print(f"  Duration: {collection_duration} seconds")
@@ -209,11 +144,10 @@ class TestDataCollectionRate:
             f"(expected ~{expected_rows} rows for {collection_duration}s at {sampling_rate} Hz)"
         )
         
-        # More rows than expected is acceptable (device may send data faster)
         if row_count > max_expected:
             print(f"Note: Collected {row_count} rows, which is above expected maximum {max_expected}. This is acceptable.")
         
-        # Verify statistics match file count (within small tolerance for timing)
+        # Verify statistics match file count
         stats_rows = statistics.get('rows', 0)
         assert abs(stats_rows - row_count) <= 100, (
             f"Statistics row count ({stats_rows}) doesn't match file row count ({row_count})"
@@ -222,40 +156,23 @@ class TestDataCollectionRate:
         # Calculate actual sampling rate
         actual_rate = row_count / collection_duration
         print(f"  Actual Sampling Rate: {actual_rate:.2f} Hz")
-
-        # Verify actual rate is at least close to target (within 10% below, but higher is acceptable)
-        # More rows than expected is acceptable (device may send data faster)
+        
         rate_diff_pct = (actual_rate - sampling_rate) / sampling_rate
         if rate_diff_pct < -tolerance:
-            # Rate is too low (more than 10% below target)
             assert False, (
                 f"Actual sampling rate {actual_rate:.2f} Hz is more than {tolerance*100:.0f}% below target {sampling_rate} Hz"
             )
         elif rate_diff_pct > tolerance:
-            # Rate is higher than expected - this is acceptable
             print(f"Note: Actual sampling rate {actual_rate:.2f} Hz is above target {sampling_rate} Hz. This is acceptable.")
         
         # Check for empty cells in data columns
-        # Forward-fill is implemented for INTERPOLATED channels, so they should not have empty cells
-        # after the first data point is seen
-        # ASYNCHRONOUS channels can have empty cells (expected when no data point within tolerance)
-        # SYNCHRONIZED channels should have values when data exists
-        from ic256_sampler.ic256_model import IC256Model
-        from ic256_sampler.virtual_database import ChannelPolicy
-        
-        # Get column definitions to identify columns by policy
         columns = IC256Model.create_columns(reference_channel)
-        
-        # Build mapping of column name to policy
         col_policy_map = {
             col_def.name: col_def.policy 
             for col_def in columns 
             if col_def.channel_path is not None
         }
         
-        # Specifically check these important channels:
-        # - External trigger (ASYNCHRONOUS)
-        # - Temperature, Humidity, Pressure (INTERPOLATED environmental channels)
         important_channels = [
             "External trigger",
             "Temperature (℃)",
@@ -268,52 +185,36 @@ class TestDataCollectionRate:
                 reader = csv.reader(f)
                 header = next(reader)
                 
-                # Find indices of all data columns
-                data_indices = [
-                    i for i, h in enumerate(header) if h in col_policy_map
-                ]
-                
-                # Find indices of INTERPOLATED columns (these should have forward-fill)
+                data_indices = [i for i, h in enumerate(header) if h in col_policy_map]
                 interpolated_indices = [
                     i for i, h in enumerate(header) 
                     if h in col_policy_map and col_policy_map[h] == ChannelPolicy.INTERPOLATED
                 ]
-                
-                # Find indices of important channels for detailed reporting
-                important_indices = [
-                    i for i, h in enumerate(header) if h in important_channels
-                ]
+                important_indices = [i for i, h in enumerate(header) if h in important_channels]
                 
                 empty_cell_issues = []
                 has_seen_data = {col_idx: False for col_idx in data_indices}
                 
                 for row_num, row in enumerate(reader, start=2):
                     if len(row) < len(header):
-                        # Row has fewer columns than header - missing cells
                         empty_cell_issues.append((row_num, "structural", f"Row has {len(row)} columns, expected {len(header)}"))
                         continue
                     
-                    # Check INTERPOLATED and ASYNCHRONOUS columns for forward-fill (should not have empty cells after first data point)
-                    # Find indices of ASYNCHRONOUS columns
                     async_indices = [
                         i for i, h in enumerate(header) 
                         if h in col_policy_map and col_policy_map[h] == ChannelPolicy.ASYNCHRONOUS
                     ]
-                    # Combine INTERPOLATED and ASYNCHRONOUS indices
                     forward_fill_indices = interpolated_indices + async_indices
                     
                     for col_idx in forward_fill_indices:
                         if col_idx < len(row):
                             cell_value = row[col_idx]
-                            # Check for empty or whitespace-only cells
                             if cell_value and cell_value.strip():
                                 has_seen_data[col_idx] = True
                             elif has_seen_data[col_idx]:
-                                # We've seen data before, so forward-fill should have filled this
                                 col_name = header[col_idx]
                                 empty_cell_issues.append((row_num, col_name, "empty cell after data seen (forward-fill should have filled)"))
                     
-                    # Track if we've seen data in any column (for reporting)
                     for col_idx in data_indices:
                         if col_idx < len(row):
                             cell_value = row[col_idx]
@@ -321,7 +222,6 @@ class TestDataCollectionRate:
                                 has_seen_data[col_idx] = True
                 
                 if empty_cell_issues:
-                    # Report first 20 issues
                     issues_str = ", ".join([
                         f"row {r} col '{c}' ({msg})" 
                         for r, c, msg in empty_cell_issues[:20]
@@ -333,7 +233,6 @@ class TestDataCollectionRate:
                     )
                     pytest.fail(error_msg)
                 
-                # Verify that important channels have at least some data
                 missing_important = []
                 for col_idx in important_indices:
                     col_name = header[col_idx]
