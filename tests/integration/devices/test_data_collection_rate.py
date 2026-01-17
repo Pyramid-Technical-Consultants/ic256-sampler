@@ -16,8 +16,8 @@ from ic256_sampler.ic256_model import IC256Model
 from ic256_sampler.virtual_database import ChannelPolicy
 
 
-# Mark all tests in this file as integration tests
-pytestmark = pytest.mark.integration
+# Mark all tests in this file as integration tests with timeout
+pytestmark = [pytest.mark.integration, pytest.mark.timeout(20)]
 
 
 class TestDataCollectionRate:

@@ -17,8 +17,8 @@ from pathlib import Path
 from tests.conftest import verify_csv_file, wait_for_condition
 
 
-# Mark all tests in this file as integration tests
-pytestmark = pytest.mark.integration
+# Mark all tests in this file as integration tests with timeout
+pytestmark = [pytest.mark.integration, pytest.mark.timeout(15)]
 
 
 class TestEndToEndApplication:

@@ -134,8 +134,8 @@ class TestApplication:
         mock_window.sampling_entry.get = Mock(return_value="500")
         app.window = mock_window
         
-        with patch('ic256_sampler.application.is_valid_device', return_value=True), \
-             patch('ic256_sampler.application.IGXWebsocketClient') as mock_client_class, \
+        with patch('ic256_sampler.device_manager.is_valid_device', return_value=True), \
+             patch('ic256_sampler.device_manager.IGXWebsocketClient') as mock_client_class, \
              patch('ic256_sampler.application.log_message_safe'):
             mock_client = Mock()
             mock_client_class.return_value = mock_client
@@ -366,7 +366,7 @@ class TestApplication:
         mock_old_connection.client = Mock()
         app.device_manager.connections[IC256_CONFIG.device_name] = mock_old_connection
         
-        with patch('ic256_sampler.application.is_valid_device', return_value=True), \
+        with patch('ic256_sampler.device_manager.is_valid_device', return_value=True), \
              patch('ic256_sampler.application.log_message_safe'), \
              patch.object(app.device_manager, 'add_device') as mock_add_device:
             app._ensure_connections()
@@ -441,9 +441,9 @@ class TestApplication:
              patch('ic256_sampler.application.set_button_state_safe') as mock_set_button, \
              patch('ic256_sampler.application.show_message_safe') as mock_show, \
              patch('ic256_sampler.application.log_message_safe') as mock_log, \
-             patch('ic256_sampler.application.get_timestamp_strings', side_effect=[("20240101", "120000"), ("20240101", "120100"), ("20240101", "120200")]), \
+             patch('ic256_sampler.file_path_generator.get_timestamp_strings', side_effect=[("20240101", "120000"), ("20240101", "120100"), ("20240101", "120200")]), \
              patch('ic256_sampler.application.ModelCollector', side_effect=model_collector_side_effect), \
-             patch('ic256_sampler.application.collect_data_with_model') as mock_collect_data, \
+             patch('ic256_sampler.model_collector.collect_data_with_model') as mock_collect_data, \
              patch('threading.Thread') as mock_thread_class:
             
             # Create mock threads - need separate instances for each acquisition
@@ -594,9 +594,9 @@ class TestApplication:
              patch('ic256_sampler.application.set_button_state_safe'), \
              patch('ic256_sampler.application.show_message_safe'), \
              patch('ic256_sampler.application.log_message_safe'), \
-             patch('ic256_sampler.application.get_timestamp_strings', return_value=("20240101", "120000")), \
+             patch('ic256_sampler.file_path_generator.get_timestamp_strings', return_value=("20240101", "120000")), \
              patch('ic256_sampler.application.ModelCollector') as mock_collector_class, \
-             patch('ic256_sampler.application.collect_data_with_model'), \
+             patch('ic256_sampler.model_collector.collect_data_with_model'), \
              patch('threading.Thread'):
             
             # Track if stop() was called
@@ -702,9 +702,9 @@ class TestApplication:
              patch('ic256_sampler.application.set_button_state_safe'), \
              patch('ic256_sampler.application.show_message_safe'), \
              patch('ic256_sampler.application.log_message_safe'), \
-             patch('ic256_sampler.application.get_timestamp_strings', return_value=("20240101", "120000")), \
+             patch('ic256_sampler.file_path_generator.get_timestamp_strings', return_value=("20240101", "120000")), \
              patch('ic256_sampler.application.ModelCollector'), \
-             patch('ic256_sampler.application.collect_data_with_model'), \
+             patch('ic256_sampler.model_collector.collect_data_with_model'), \
              patch('threading.Thread'):
             
             # Start second acquisition
@@ -821,9 +821,9 @@ class TestApplication:
              patch('ic256_sampler.application.set_button_state_safe'), \
              patch('ic256_sampler.application.show_message_safe'), \
              patch('ic256_sampler.application.log_message_safe'), \
-             patch('ic256_sampler.application.get_timestamp_strings', return_value=("20240101", "120000")), \
+             patch('ic256_sampler.file_path_generator.get_timestamp_strings', return_value=("20240101", "120000")), \
              patch('ic256_sampler.application.ModelCollector'), \
-             patch('ic256_sampler.application.collect_data_with_model'), \
+             patch('ic256_sampler.model_collector.collect_data_with_model'), \
              patch('threading.Thread'):
             
             # Simulate first acquisition

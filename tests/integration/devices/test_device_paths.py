@@ -20,9 +20,9 @@ from ic256_sampler.device_paths import (
 )
 from ic256_sampler.utils import is_valid_device, is_valid_ipv4
 
+pytestmark = [pytest.mark.integration, pytest.mark.timeout(10)]
 
-# Mark all tests in this file as integration tests
-pytestmark = pytest.mark.integration
+
 
 
 class TestDevicePathsHTTP:
