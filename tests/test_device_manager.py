@@ -294,7 +294,11 @@ class TestDeviceManagerThreadCoordination:
         mock_thread.start.assert_called_once()
 
     def test_stop_stops_collection_threads(self):
-        """Test that stop() properly stops collection threads."""
+        """Test that stop() properly signals threads to stop (non-blocking).
+        
+        Note: stop() is non-blocking and does not join threads. Thread joining
+        is handled by close_all_connections().
+        """
         manager = DeviceManager()
         manager.stop_event = threading.Event()
         manager._running = True
@@ -317,13 +321,15 @@ class TestDeviceManagerThreadCoordination:
         
         manager.connections["IC256-42/35"] = connection
         
-        # Stop the manager
+        # Stop the manager (non-blocking)
         manager.stop()
         
-        # Verify stop_event was set and thread join was called
+        # Verify stop_event was set and _running flag is False
+        # Note: stop() does NOT join threads - that's handled by close_all_connections()
         assert manager.stop_event.is_set()
         assert manager._running is False
-        mock_thread.join.assert_called_once()
+        # stop() is non-blocking, so join() should NOT be called here
+        mock_thread.join.assert_not_called()
 
     def test_start_idempotent(self):
         """Test that calling start() multiple times is safe."""
@@ -664,6 +670,7 @@ class TestDeviceManagerRealDeviceIntegration:
         device_manager.close_all_connections()
     
     @pytest.mark.integration
+    @pytest.mark.timeout(20)  # Test runs for 10 seconds + overhead
     def test_device_manager_collects_thousands_of_data_points(self, ic256_ip):
         """Integration test: Verify DeviceManager can collect thousands of data points.
         

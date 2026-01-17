@@ -202,7 +202,8 @@ class TestApplicationFileSizeDisplay:
         
         def track_update(rows, file_size):
             update_threads.append(threading.current_thread().name)
-            mock_window.update_statistics(rows, file_size)
+            # Don't call mock_window.update_statistics again - that would cause infinite recursion
+            # The side_effect itself handles the call tracking
         
         mock_window.update_statistics.side_effect = track_update
         

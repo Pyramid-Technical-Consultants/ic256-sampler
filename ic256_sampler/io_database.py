@@ -76,6 +76,11 @@ class ChannelData:
         
         self.last_timestamp = timestamp_ns
         
+        # If timestamp_ns is invalid (0), always use channel's first_timestamp as reference
+        # This prevents negative elapsed_time when invalid timestamps are mixed with valid global references
+        if timestamp_ns <= 0:
+            reference_timestamp = self.first_timestamp if self.first_timestamp is not None else timestamp_ns
+        
         # Calculate elapsed time
         elapsed_time = (timestamp_ns - reference_timestamp) / 1e9
         
@@ -244,28 +249,21 @@ class IODatabase:
         value: Any, 
         timestamp_ns: int
     ) -> None:
-        """Add a data point to a channel.
+        """Add a data point to a channel."""
+        # Get or create channel in one operation
+        channel_data = self.channels.setdefault(channel_path, ChannelData(channel_path=channel_path))
         
-        Args:
-            channel_path: Path to the channel
-            value: The data value
-            timestamp_ns: Timestamp in nanoseconds since 1970
-        """
-        # Get or create channel in one operation (optimized dictionary access)
-        channel_data = self.channels.get(channel_path)
-        if channel_data is None:
-            channel_data = ChannelData(channel_path=channel_path)
-            self.channels[channel_path] = channel_data
-        
-        # Track global first timestamp
-        if self.global_first_timestamp is None:
+        # Track global first timestamp (only for valid timestamps > 0)
+        # Invalid timestamps (0) should not be used as the global reference
+        if self.global_first_timestamp is None and timestamp_ns > 0:
             self.global_first_timestamp = timestamp_ns
         
-        # Use global first timestamp as reference for elapsed time
-        reference = self.global_first_timestamp
+        # Use global_first_timestamp as reference, but only if it's valid (> 0)
+        # Otherwise, let ChannelData.add_point use the channel's first_timestamp
+        reference_timestamp = self.global_first_timestamp if (self.global_first_timestamp is not None and self.global_first_timestamp > 0) else None
         
         # Add the data point
-        channel_data.add_point(value, timestamp_ns, reference)
+        channel_data.add_point(value, timestamp_ns, reference_timestamp)
     
     def get_channel(self, channel_path: str) -> Optional[ChannelData]:
         """Get channel data for a specific channel.

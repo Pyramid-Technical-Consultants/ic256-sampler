@@ -114,7 +114,7 @@ class Application:
         return (
             self.window.ix256_a_entry.get(),
             self.window.tx2_entry.get(),
-            self.window.note_entry.get(),
+            self.window.get_note_value() if hasattr(self.window, 'get_note_value') else self.window.note_entry.get(),
             self.window.path_entry.get(),
         )
     
@@ -225,20 +225,13 @@ class Application:
         start_time = time.time()
         while not self.stop_event.is_set():
             elapsed_time = time.time() - start_time
-            # Format time components efficiently
             minutes = int(elapsed_time // 60)
             seconds = int(elapsed_time % 60)
             ticks = int((elapsed_time - int(elapsed_time)) * 1000)
             
-            # Create formatted strings
-            minute_time = f"{minutes:02d}"
-            second_time = f"{seconds:02d}"
-            ticks_time = f"{ticks:03d}"
-            
-            # Update GUI (lambda captures values correctly with defaults)
             safe_gui_update(
                 self.window,
-                lambda m=minute_time, s=second_time, t=ticks_time: self.window.update_elapse_time(m, s, t)
+                lambda m=f"{minutes:02d}", s=f"{seconds:02d}", t=f"{ticks:03d}": self.window.update_elapse_time(m, s, t)
             )
             time.sleep(TIME_UPDATE_INTERVAL)
     
@@ -574,6 +567,18 @@ class Application:
         # Use blocking approach if no window (for test reliability)
         if self.window and hasattr(self.window, 'root') and self.window.root:
             # Non-blocking: use GUI after() callback
+            # Check once synchronously first - if all threads are already finished, reset immediately
+            # This ensures tests and quick stops work correctly
+            collector_alive = self.collector_thread and self.collector_thread.is_alive()
+            stats_alive = self.stats_thread and self.stats_thread.is_alive()
+            elapse_alive = self.elapse_time_thread and self.elapse_time_thread.is_alive()
+            
+            if not collector_alive and not stats_alive and not elapse_alive:
+                # All threads finished - complete cleanup synchronously
+                self._stopping = False
+                self._finalize_stop()
+                return
+            # Thread still running - use async check
             self._check_collector_thread_finished()
         else:
             # Blocking: wait directly (for tests without GUI)

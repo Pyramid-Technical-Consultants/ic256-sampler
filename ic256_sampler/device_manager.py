@@ -553,33 +553,19 @@ class DeviceManager:
         self._ensure_device_connection(TX2_CONFIG, tx2_ip, sampling_rate, log_callback)
     
     def _ensure_connection_open(self, connection: DeviceConnection, device_name: str, log_callback: Optional[Callable[[str, str], None]]) -> bool:
-        """Ensure a device connection is open, reconnecting if necessary.
-        
-        Args:
-            connection: Device connection to check
-            device_name: Name of the device (for logging)
-            log_callback: Optional callback for logging
-            
-        Returns:
-            True if connection is open, False otherwise
-        """
+        """Ensure a device connection is open, reconnecting if necessary."""
         if connection.client.ws != "" and connection.client.ws.connected:
             return True
         
-        # Connection is closed - attempt reconnect
-        error_msg = f"Connection closed for {device_name}. Attempting reconnect..."
         if log_callback:
-            log_callback(error_msg, "WARNING")
-        print(f"Warning: {error_msg}")
+            log_callback(f"Connection closed for {device_name}. Attempting reconnect...", "WARNING")
         
         try:
             connection.client.reconnect()
             return True
-        except Exception as reconnect_error:
-            error_msg = f"Failed to reconnect {device_name}: {reconnect_error}"
+        except Exception as e:
             if log_callback:
-                log_callback(error_msg, "ERROR")
-            print(f"Error: {error_msg}")
+                log_callback(f"Failed to reconnect {device_name}: {e}", "ERROR")
             return False
     
     def _setup_device_and_resubscribe(self, connection: DeviceConnection, sampling_rate: int) -> bool:
@@ -637,22 +623,18 @@ class DeviceManager:
         
         # Setup failed - check if connection is still open
         if connection.client.ws == "" or not connection.client.ws.connected:
-            # Connection closed during setup - try reconnect and retry
             if not self._ensure_connection_open(connection, device_name, log_callback):
                 return False
             return self._setup_device_and_resubscribe(connection, sampling_rate)
-        else:
-            # Connection still open but setup failed - try to re-subscribe anyway
-            # (keep-alive thread will handle reconnection if needed)
-            print(f"Transient connection error for {device_name} during setup (connection still open). "
-                  f"Keep-alive thread will handle reconnection if needed.")
-            try:
-                connection.client.sendSubscribeFields({
-                    field: True for field in connection.channels.values()
-                })
-                return True
-            except Exception:
-                return False
+        
+        # Connection still open but setup failed - try to re-subscribe anyway
+        try:
+            connection.client.sendSubscribeFields({
+                field: True for field in connection.channels.values()
+            })
+            return True
+        except Exception:
+            return False
     
     def setup_single_device(
         self,
@@ -797,12 +779,10 @@ class DeviceManager:
         channels_to_add: set[str] = set()
         
         # Collect all data points first (without holding lock)
-        # First pass: collect all channel paths that might need to be added
         potential_channels = set()
         for field_name, channel in channels.items():
             try:
                 data = channel.getDatums()
-                
                 if not data:
                     continue
                 
@@ -823,8 +803,8 @@ class DeviceManager:
                     value = data_point[0]
                     ts_raw = data_point[1]
                     
+                    # Convert timestamp to nanoseconds
                     try:
-                        # Convert timestamp to nanoseconds
                         if isinstance(ts_raw, float):
                             ts_ns = int(ts_raw * 1e9 if ts_raw < 1e12 else ts_raw)
                         elif isinstance(ts_raw, int):
@@ -840,25 +820,16 @@ class DeviceManager:
                     all_points.append((channel_path, value, ts_ns))
                 
                 channel.clearDatums()
-                        
-            except Exception as e:
-                print(f"Error collecting data from {field_name}: {e}")
+            except Exception:
                 continue
         
-        # Check which channels need to be added (single lock acquisition)
-        if potential_channels:
+        # Batch update database (single lock acquisition)
+        if potential_channels or all_points:
             with self._lock:
+                # Add new channels if needed
                 existing_channels = self.io_database.get_all_channels()
                 for channel_path in potential_channels:
                     if channel_path not in existing_channels:
-                        channels_to_add.add(channel_path)
-        
-        # Batch update database (single lock acquisition)
-        if channels_to_add or all_points:
-            with self._lock:
-                # Add new channels
-                for channel_path in channels_to_add:
-                    if channel_path not in self.io_database.get_all_channels():
                         self.io_database.add_channel(channel_path)
                 
                 # Add all data points

@@ -16,94 +16,124 @@ from .config import update_file_json, init_ip
 from PIL import Image, ImageTk
 
 
-# Modern color scheme
+# Standard color scheme - using system colors where possible
 COLORS = {
-    "primary": "#2196F3",  # Blue
-    "success": "#4CAF50",  # Green
-    "error": "#F44336",    # Red
-    "warning": "#FF9800",  # Orange
-    "background": "#FAFAFA",  # Light gray
-    "surface": "#FFFFFF",  # White
-    "text_primary": "#212121",  # Dark gray
-    "text_secondary": "#757575",  # Medium gray
-    "border": "#E0E0E0",  # Light border
-    "hover": "#1976D2",  # Darker blue for hover
-    "disabled_bg": "#E0E0E0",  # Light gray for disabled buttons
-    "disabled_fg": "#9E9E9E",  # Medium gray text for disabled buttons
-    "disabled_border": "#BDBDBD",  # Border for disabled buttons
+    "primary": "SystemButtonFace",  # Use system button color
+    "success": "SystemButtonFace",  # Standard button color
+    "error": "SystemButtonFace",    # Standard button color
+    "warning": "SystemButtonFace",  # Standard button color
+    "background": "SystemButtonFace",  # System background
+    "surface": "SystemWindow",  # System window background
+    "text_primary": "SystemWindowText",  # System text color
+    "text_secondary": "SystemGrayText",  # System gray text
+    "border": "SystemButtonShadow",  # System border
+    "hover": "SystemButtonFace",  # System button face
+    "disabled_bg": "SystemButtonFace",  # System disabled background
+    "disabled_fg": "SystemGrayText",  # System disabled text
+    "disabled_border": "SystemButtonShadow",  # System disabled border
 }
 
-# Font style configuration
+# Font style configuration - using standard sizes
 FONTS = {
-    "family_ui": "Segoe UI",  # Primary UI font family
-    "family_mono": "Consolas",  # Monospace font for logs/code
+    "family_ui": "TkDefaultFont",  # System default font
+    "family_mono": "TkFixedFont",  # System monospace font
     "size_tiny": 9,
-    "size_small": 10,
-    "size_normal": 11,
-    "size_medium": 12,
-    "size_large": 14,
-    "size_huge": 48,
+    "size_small": 9,
+    "size_normal": 10,
+    "size_medium": 11,
+    "size_large": 12,
+    "size_huge": 24,  # Reduced from 48 for less flashy display
     # Predefined font tuples for common use cases
-    "tooltip": ("Segoe UI", 9),
-    "button": ("Segoe UI", 11, "bold"),
-    "button_small": ("Segoe UI", 10, "bold"),
-    "label": ("Segoe UI", 11),
-    "label_small": ("Segoe UI", 10),
-    "label_medium": ("Segoe UI", 12, "bold"),
-    "entry": ("Segoe UI", 10),
-    "entry_large": ("Segoe UI", 11),
-    "heading": ("Segoe UI", 12, "bold"),
-    "time_display": ("Segoe UI", 48, "bold"),
-    "date_time": ("Segoe UI", 10, "bold"),
-    "log": ("Consolas", 10),
-    "log_bold": ("Consolas", 10, "bold"),
+    "tooltip": ("TkDefaultFont", 9),
+    "button": ("TkDefaultFont", 10),
+    "button_small": ("TkDefaultFont", 9),
+    "label": ("TkDefaultFont", 10),
+    "label_small": ("TkDefaultFont", 9),
+    "label_medium": ("TkDefaultFont", 10, "bold"),
+    "entry": ("TkDefaultFont", 10),
+    "entry_large": ("TkDefaultFont", 10),
+    "heading": ("TkDefaultFont", 10, "bold"),
+    "time_display": ("TkDefaultFont", 24, "bold"),  # Reduced from 48
+    "date_time": ("TkDefaultFont", 9),
+    "log": ("TkFixedFont", 9),
+    "log_bold": ("TkFixedFont", 9, "bold"),
 }
 
 
 class ToolTip:
-    """Tooltip widget for showing helpful hints."""
-    def __init__(self, widget, text: str, x: int, y: int):
+    """Tooltip widget for showing helpful hints with delay to prevent flickering."""
+    def __init__(self, widget, text: str, x: int, y: int, delay: int = 500):
         self.widget = widget
         self.text = text
         self.tooltip: Optional[tk.Toplevel] = None
         self.x = x
         self.y = y
+        self.delay = delay  # Delay in milliseconds before showing tooltip
+        self.after_id: Optional[str] = None
 
-        self.widget.bind("<Enter>", self.on_enter)
-        self.widget.bind("<Leave>", self.on_leave)
+        # Use add=True to not override existing bindings
+        self.widget.bind("<Enter>", self.on_enter, add="+")
+        self.widget.bind("<Leave>", self.on_leave, add="+")
+        self.widget.bind("<ButtonPress>", self.on_leave, add="+")  # Hide on click
 
     def show_tooltip(self, event=None):
         """Display tooltip on hover."""
         if not self.tooltip:
-            x, y, _, _ = self.widget.bbox("insert")
-            x += self.widget.winfo_rootx() + self.x
-            y += self.widget.winfo_rooty() + self.y
+            try:
+                # Get widget position
+                x = self.widget.winfo_rootx() + self.x
+                y = self.widget.winfo_rooty() + self.y + self.widget.winfo_height()
+                
+                # If bbox is available (for text widgets), use it
+                try:
+                    bbox = self.widget.bbox("insert")
+                    if bbox:
+                        x = self.widget.winfo_rootx() + bbox[0] + self.x
+                        y = self.widget.winfo_rooty() + bbox[1] + bbox[3] + self.y
+                except (tk.TclError, AttributeError):
+                    pass
 
-            self.tooltip = tk.Toplevel(self.widget)
-            self.tooltip.wm_overrideredirect(True)
-            self.tooltip.wm_geometry(f"+{x}+{y}")
+                self.tooltip = tk.Toplevel(self.widget)
+                self.tooltip.wm_overrideredirect(True)
+                self.tooltip.wm_geometry(f"+{x}+{y}")
 
-            label = tk.Label(
-                self.tooltip,
-                text=self.text,
-                background="#FFFFE0",
-                relief="solid",
-                borderwidth=1,
-                font=FONTS["tooltip"],
-                padx=5,
-                pady=2,
-            )
-            label.pack()
+                label = tk.Label(
+                    self.tooltip,
+                    text=self.text,
+                    background="#FFFFE0",
+                    relief="solid",
+                    borderwidth=1,
+                    font=FONTS["tooltip"],
+                    padx=5,
+                    pady=2,
+                )
+                label.pack()
+            except (tk.TclError, AttributeError):
+                # Widget may have been destroyed
+                self.tooltip = None
 
     def hide_tooltip(self, event=None):
         """Hide tooltip."""
+        # Cancel any pending tooltip display
+        if self.after_id:
+            self.widget.after_cancel(self.after_id)
+            self.after_id = None
+        
         if self.tooltip:
-            self.tooltip.destroy()
+            try:
+                self.tooltip.destroy()
+            except (tk.TclError, AttributeError):
+                pass
             self.tooltip = None
 
     def on_enter(self, event):
-        """Handle mouse enter event."""
-        self.show_tooltip()
+        """Handle mouse enter event with delay."""
+        # Cancel any existing pending tooltip
+        if self.after_id:
+            self.widget.after_cancel(self.after_id)
+        
+        # Schedule tooltip to show after delay
+        self.after_id = self.widget.after(self.delay, self.show_tooltip)
 
     def on_leave(self, event):
         """Handle mouse leave event."""
@@ -124,7 +154,7 @@ class GUI:
         self.root.resizable(True, True)
         self.root.minsize(800, 600)  # Larger minimum size for better layout
         
-        # Set modern background color
+        # Set system background color
         self.root.configure(bg=COLORS["background"])
 
         # Determine the path to the executable's directory or package directory
@@ -164,6 +194,12 @@ class GUI:
         self.open_folder_image = self.resize_image(
             os.path.join(images_dir, "open_folder.png"), (13, 13)
         )
+        
+        # Bind keyboard shortcuts
+        self._setup_keyboard_shortcuts()
+        
+        # Load and apply window state
+        self._load_window_state()
 
     def resize_image(self, image_path: str, size: tuple) -> ImageTk.PhotoImage:
         """Resize an image to the specified size.
@@ -178,6 +214,105 @@ class GUI:
         with Image.open(image_path) as img:
             img = img.resize(size, Image.LANCZOS)
             return ImageTk.PhotoImage(img)
+    
+    def _setup_keyboard_shortcuts(self):
+        """Set up keyboard shortcuts for common actions.
+        
+        Uses function keys and non-conflicting shortcuts to avoid conflicts
+        with standard Windows/Mac shortcuts (Ctrl+S=Save, Ctrl+Q=Quit, etc.)
+        """
+        # F9: Start collection (function keys are safe, don't conflict)
+        self.root.bind('<F9>', lambda e: self.start() if hasattr(self, 'start_button') and self.start_button['state'] == 'normal' else None)
+        
+        # F10 or Esc: Stop collection
+        self.root.bind('<F10>', lambda e: self.stop() if hasattr(self, 'stop_button') and self.stop_button['state'] == 'normal' else None)
+        # Esc only stops if stop button is enabled (not when editing text)
+        self.root.bind('<Escape>', lambda e: self.stop() if hasattr(self, 'stop_button') and self.stop_button['state'] == 'normal' else None)
+        
+        # Ctrl+Shift+S: Export log (Save As pattern, doesn't conflict with Ctrl+S)
+        self.root.bind('<Control-Shift-S>', lambda e: self._export_log() if hasattr(self, 'log_text') else None)
+        
+        # Ctrl+F: Focus search in log tab (standard Find shortcut, only when log tab visible)
+        # This is fine as Ctrl+F is standard for Find/Search
+        self.root.bind('<Control-f>', lambda e: self._focus_log_search() if hasattr(self, 'log_search_entry') else None)
+        
+        # Note: Ctrl+C for copy is handled natively by Text widget, no need to bind globally
+        # This avoids conflicts with standard copy behavior
+    
+    def _get_window_state_file(self) -> str:
+        """Get path to window state file."""
+        import pathlib
+        if hasattr(sys, "_MEIPASS"):
+            # PyInstaller bundle - use user config directory
+            config_dir = pathlib.Path.home() / ".ic256-sampler"
+            config_dir.mkdir(parents=True, exist_ok=True)
+            return str(config_dir / "window_state.json")
+        else:
+            # Development mode - use project root
+            package_dir = pathlib.Path(__file__).parent.parent
+            return str(package_dir / "window_state.json")
+    
+    def _load_window_state(self):
+        """Load and apply saved window state (size and position)."""
+        import json
+        state_file = self._get_window_state_file()
+        
+        try:
+            if os.path.exists(state_file):
+                with open(state_file, 'r') as f:
+                    state = json.load(f)
+                    
+                width = state.get('width', 1000)
+                height = state.get('height', 700)
+                x = state.get('x', None)
+                y = state.get('y', None)
+                
+                # Validate dimensions
+                width = max(800, min(width, self.root.winfo_screenwidth()))
+                height = max(600, min(height, self.root.winfo_screenheight()))
+                
+                self.root.geometry(f"{width}x{height}")
+                
+                # Set position if valid
+                if x is not None and y is not None:
+                    # Ensure window is on screen
+                    screen_width = self.root.winfo_screenwidth()
+                    screen_height = self.root.winfo_screenheight()
+                    x = max(0, min(x, screen_width - width))
+                    y = max(0, min(y, screen_height - height))
+                    self.root.geometry(f"{width}x{height}+{x}+{y}")
+        except (json.JSONDecodeError, IOError, OSError, ValueError):
+            # If loading fails, use default size
+            self.root.geometry("1000x700")
+        
+        # Save state on window close
+        self.root.protocol("WM_DELETE_WINDOW", self._on_window_close)
+    
+    def _save_window_state(self):
+        """Save current window state (size and position)."""
+        import json
+        try:
+            state = {
+                'width': self.root.winfo_width(),
+                'height': self.root.winfo_height(),
+                'x': self.root.winfo_x(),
+                'y': self.root.winfo_y()
+            }
+            
+            state_file = self._get_window_state_file()
+            with open(state_file, 'w') as f:
+                json.dump(state, f, indent=2)
+        except (IOError, OSError, tk.TclError):
+            # Ignore errors when saving state
+            pass
+    
+    def _on_window_close(self):
+        """Handle window close event - save state and call cleanup."""
+        self._save_window_state()
+        if hasattr(self, 'on_close'):
+            self.on_close()
+        else:
+            self.root.quit()
 
     def update_date_time(self):
         """Update the date/time display."""
@@ -185,18 +320,6 @@ class GUI:
         current_date = now.strftime("%Y-%m-%d")
         current_time = now.strftime("%H:%M:%S")
         self.display_time.config(text=f"{current_date} {current_time}")
-        
-        # Update connection status label position based on clock width
-        # Position status indicator right after the clock text
-        if hasattr(self, 'connection_status_label') and hasattr(self, 'display_time'):
-            try:
-                clock_width = self.display_time.winfo_reqwidth()
-                self.connection_status_label.place(x=350 + clock_width + 10, y=3)
-                if hasattr(self, 'connection_status_text'):
-                    self.connection_status_text.place(x=350 + clock_width + 30, y=3)
-            except (tk.TclError, AttributeError):
-                pass  # Widget not yet rendered
-        
         self.root.after(1000, self.update_date_time)
     
     def update_connection_status(self, status_dict: Dict[str, str]) -> None:
@@ -393,20 +516,23 @@ class GUI:
         text_color: str = "white",
         **kwargs
     ) -> tk.Button:
-        """Create a modern styled button with rounded corners (2px radius) and native Windows appearance.
+        """Create a button with native appearance and subtle color customization.
+        
+        Uses native button styling with system colors, but allows color customization
+        for important actions (start/stop) while maintaining native look and feel.
         
         Args:
             parent: Parent widget
             text: Button text
             command: Command to execute on click
-            fg_color: Background color
+            fg_color: Background color (for important buttons)
             text_color: Text color
             **kwargs: Additional button options
             
         Returns:
-            Configured button widget (wrapped in container for rounded corners)
+            Configured button widget with native styling
         """
-        # Use native Windows button style with flat relief for rounded corner effect
+        # Use native button styling - system relief and border
         button = tk.Button(
             parent,
             text=text,
@@ -416,55 +542,18 @@ class GUI:
             fg=text_color,
             activebackground=COLORS["hover"] if fg_color == COLORS["primary"] else fg_color,
             activeforeground=text_color,
-            relief="flat",  # Flat relief works better with rounded corners
-            borderwidth=0,  # No border for cleaner rounded look
+            relief="raised",  # Native raised button appearance
+            borderwidth=1,  # Standard native border
             padx=20,
-            pady=10,
+            pady=8,
             cursor="hand2",
-            highlightthickness=0,  # Remove focus highlight for cleaner look
+            highlightthickness=1,  # Native focus highlight
             **kwargs
         )
-        
-        # Note: Rounded corners removed temporarily to fix button visibility issue
-        # The canvas overlay was interfering with button display
         
         # Store original colors for state management
         button._original_bg = fg_color
         button._original_fg = text_color
-        
-        # Add hover effect (only when enabled)
-        def on_enter(e):
-            if button["state"] == "normal":
-                if fg_color == COLORS["primary"]:
-                    button.config(bg=COLORS["hover"])
-                elif fg_color == COLORS["success"]:
-                    button.config(bg="#45B049")  # Slightly darker green
-                elif fg_color == COLORS["error"]:
-                    button.config(bg="#E53935")  # Slightly darker red
-        
-        def on_leave(e):
-            if button["state"] == "normal":
-                button.config(bg=button._original_bg)
-        
-        def on_press(e):
-            if button["state"] == "normal":
-                # Visual feedback - slightly darker
-                current_bg = button.cget("bg")
-                if current_bg == COLORS["hover"]:
-                    button.config(bg="#1565C0")  # Even darker blue
-                elif current_bg == COLORS["success"]:
-                    button.config(bg="#388E3C")  # Darker green
-                elif current_bg == COLORS["error"]:
-                    button.config(bg="#C62828")  # Darker red
-        
-        def on_release(e):
-            if button["state"] == "normal":
-                button.config(bg=button._original_bg if button._original_bg != COLORS["primary"] else COLORS["hover"])
-        
-        button.bind("<Enter>", on_enter)
-        button.bind("<Leave>", on_leave)
-        button.bind("<Button-1>", on_press)
-        button.bind("<ButtonRelease-1>", on_release)
         
         # Create wrapper method to handle state changes with proper styling
         original_config = button.config
@@ -474,30 +563,22 @@ class GUI:
             if "state" in kw:
                 state = kw["state"]
                 if state == "disabled":
-                    # Make disabled state very clear
+                    # Use native disabled appearance
                     try:
                         button.config(
-                            bg=COLORS["disabled_bg"],
-                            fg=COLORS["disabled_fg"],
-                            cursor="arrow"  # Normal cursor when disabled
+                            relief="sunken",  # Native disabled appearance
+                            cursor="arrow"
                         )
-                        # Unbind hover events when disabled
-                        button.unbind("<Enter>")
-                        button.unbind("<Leave>")
                     except tk.TclError:
-                        button.config(cursor="arrow")
+                        pass
                 elif state == "normal":
-                    # Restore normal appearance
+                    # Restore normal native appearance
                     button.config(
                         bg=button._original_bg,
                         fg=button._original_fg,
-                        cursor="hand2",
-                        activebackground=COLORS["hover"] if button._original_bg == COLORS["primary"] else button._original_bg,
-                        activeforeground=button._original_fg
+                        relief="raised",
+                        cursor="hand2"
                     )
-                    # Rebind hover events when enabled
-                    button.bind("<Enter>", on_enter)
-                    button.bind("<Leave>", on_leave)
             return result
         
         # Replace config method with enhanced version
@@ -514,31 +595,68 @@ class GUI:
         
         tab_frame = tk.Frame(self.root, bg=COLORS["background"])
         tab_frame.grid(row=0, column=0, sticky="nsew")
-        tab_frame.grid_rowconfigure(0, weight=1)
+        tab_frame.grid_rowconfigure(1, weight=1)  # Notebook row
         tab_frame.grid_columnconfigure(0, weight=1)
+
+        # Connection status indicator in top left corner (outside tab control)
+        connection_frame = tk.Frame(tab_frame, bg=COLORS["background"])
+        connection_frame.grid(row=0, column=0, sticky="nw", padx=10, pady=5)
+        
+        self.connection_status_label = tk.Label(
+            connection_frame,
+            font=FONTS["date_time"],
+            fg=COLORS["text_secondary"],
+            bg=COLORS["background"],
+            text="●",
+            cursor="hand2"
+        )
+        self.connection_status_label.pack(side=tk.LEFT, padx=(0, 5))
+        ToolTip(self.connection_status_label, "Device connection status indicator", 0, 20)
+        
+        self.connection_status_text = tk.Label(
+            connection_frame,
+            font=("Segoe UI", 9),
+            fg=COLORS["text_secondary"],
+            bg=COLORS["background"],
+            text="",
+            cursor="hand2"
+        )
+        self.connection_status_text.pack(side=tk.LEFT)
+        ToolTip(self.connection_status_text, "Click to view detailed connection status", 0, 20)
 
         # Create a Notebook (Tab Control)
         self.tab = ttk.Notebook(tab_frame)
-        self.tab.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
+        self.tab.grid(row=1, column=0, sticky="nsew", padx=2, pady=2)
 
         # Create tabs
         self.main_tab = self.create_tab(self.tab, "Main")
         self.setting_tab = self.create_tab(self.tab, "Settings")
         self.log_tab = self.create_tab(self.tab, "Log")
 
-        # Configure modern style
+        # Configure native style - use system theme
         style = ttk.Style()
-        if "vista" in style.theme_names():
-            style.theme_use("vista")
+        # Use native theme for the platform
+        if sys.platform == "win32":
+            if "vista" in style.theme_names():
+                style.theme_use("vista")
+            elif "xpnative" in style.theme_names():
+                style.theme_use("xpnative")
+            else:
+                style.theme_use("default")
+        elif sys.platform == "darwin":
+            if "aqua" in style.theme_names():
+                style.theme_use("aqua")
+            else:
+                style.theme_use("default")
         else:
+            # Linux - use default
             style.theme_use("default")
         
-        # Modern tab styling
-        style.configure("TNotebook", background=COLORS["background"], borderwidth=0)
+        # Minimal custom styling to keep native look
+        style.configure("TNotebook", borderwidth=1)
         style.configure("TNotebook.Tab", 
-                       padding=(15, 8), 
-                       font=FONTS["button_small"],
-                       foreground=COLORS["text_primary"])
+                       padding=(12, 6),  # Slightly reduced padding for native look
+                       font=FONTS["button_small"])
 
         # Bind tab change event
         self.tab.bind("<<NotebookTabChanged>>", self.on_tab_click)
@@ -547,7 +665,7 @@ class GUI:
         message_frame = tk.Frame(
             self.root, 
             height=30,
-            bg=COLORS["surface"],
+            bg=COLORS["background"],
             relief="flat"
         )
         message_frame.grid(row=1, column=0, sticky="ew")
@@ -558,7 +676,7 @@ class GUI:
             message_frame,
             font=FONTS["label_small"],
             anchor="w",
-            bg=COLORS["surface"],
+            bg=COLORS["background"],
             fg=COLORS["text_primary"],
             wraplength=580
         )
@@ -568,36 +686,19 @@ class GUI:
 
     def render_date_time(self):
         """Render date/time display in tab header."""
+        # Create a frame for date/time in top right corner
+        header_frame = tk.Frame(self.tab, bg=COLORS["background"])
+        header_frame.pack(side=tk.RIGHT, padx=10, pady=3)
+        
         # Date/time label
         self.display_time = tk.Label(
-            self.tab,
+            header_frame,
             font=FONTS["date_time"],
-            fg=COLORS["primary"],
+            fg=COLORS["text_primary"],
             bg=COLORS["background"]
         )
-        self.display_time.place(x=350, y=3)
+        self.display_time.pack(side=tk.LEFT)
         self.update_date_time()
-        
-        # Connection status indicator (next to clock)
-        self.connection_status_label = tk.Label(
-            self.tab,
-            font=FONTS["date_time"],
-            fg=COLORS["text_secondary"],
-            bg=COLORS["background"],
-            text="●"
-        )
-        # Position it to the right of the clock (we'll update position after first clock update)
-        self.connection_status_label.place(x=550, y=3)
-        
-        # Connection status text (device names)
-        self.connection_status_text = tk.Label(
-            self.tab,
-            font=("Segoe UI", 9),
-            fg=COLORS["text_secondary"],
-            bg=COLORS["background"],
-            text=""
-        )
-        self.connection_status_text.place(x=570, y=3)
 
     def render_main_tab(self):
         """Render the main tab with centered, beautiful layout."""
@@ -615,9 +716,9 @@ class GUI:
         content_frame = tk.Frame(main_container, bg=COLORS["background"])
         content_frame.grid(row=0, column=0)
         
-        # Input section with modern styling
-        input_section = tk.Frame(content_frame, bg=COLORS["surface"], relief="flat")
-        input_section.grid(row=0, column=0, pady=30, padx=40, sticky="ew")
+        # Input section with standard styling
+        input_section = tk.Frame(content_frame, bg=COLORS["background"], relief="flat")
+        input_section.grid(row=0, column=0, pady=20, padx=20, sticky="ew")
         input_section.grid_columnconfigure(1, weight=1)
         
         # Note entry with modern styling
@@ -625,7 +726,7 @@ class GUI:
             input_section,
             font=FONTS["heading"],
             text="Note:",
-            bg=COLORS["surface"],
+            bg=COLORS["background"],
             fg=COLORS["text_primary"],
             width=12,
             anchor="w"
@@ -636,12 +737,18 @@ class GUI:
             input_section,
             font=FONTS["entry_large"],
             width=35,
-            relief="sunken",  # Native Windows entry field appearance
-            borderwidth=2,  # Standard Windows border width
-            highlightthickness=0,  # Remove custom highlight for native look
+            relief="sunken",  # Native entry field appearance
+            borderwidth=1,  # Standard native border width
+            highlightthickness=1,  # Native focus highlight
             insertbackground=COLORS["text_primary"]  # Cursor color
         )
         self.note_entry.grid(row=0, column=1, padx=15, pady=15, sticky="ew")
+        note_placeholder = "Enter a note for this data collection session..."
+        self.note_entry.insert(0, note_placeholder)
+        self.note_entry.config(fg=COLORS["text_secondary"])
+        self.note_entry.bind('<FocusIn>', lambda e: self._on_entry_focus_in(self.note_entry, note_placeholder))
+        self.note_entry.bind('<FocusOut>', lambda e: self._on_entry_focus_out(self.note_entry, note_placeholder))
+        ToolTip(self.note_entry, "Optional note to include in the CSV file name and metadata", 0, 20)
 
         # Elapsed time section
         time_section = tk.Frame(content_frame, bg=COLORS["background"])
@@ -664,7 +771,7 @@ class GUI:
             font=FONTS["time_display"],
             text="00",
             bg=COLORS["background"],
-            fg=COLORS["primary"],
+            fg=COLORS["text_primary"],
             width=3
         )
         self.minute.grid(row=0, column=0, padx=2)
@@ -683,7 +790,7 @@ class GUI:
             font=FONTS["time_display"],
             text="00",
             bg=COLORS["background"],
-            fg=COLORS["primary"],
+            fg=COLORS["text_primary"],
             width=3
         )
         self.second.grid(row=0, column=2, padx=2)
@@ -702,14 +809,14 @@ class GUI:
             font=FONTS["time_display"],
             text="000",
             bg=COLORS["background"],
-            fg=COLORS["primary"],
+            fg=COLORS["text_primary"],
             width=4
         )
         self.ticks.grid(row=0, column=4, padx=2)
 
         # Statistics section (rows and file size) - separate row below elapsed time
-        stats_section = tk.Frame(content_frame, bg=COLORS["surface"], relief="flat")
-        stats_section.grid(row=2, column=0, pady=20, padx=40, sticky="ew")
+        stats_section = tk.Frame(content_frame, bg=COLORS["background"], relief="flat")
+        stats_section.grid(row=2, column=0, pady=15, padx=20, sticky="ew")
         stats_section.grid_columnconfigure(0, weight=1)
         stats_section.grid_columnconfigure(1, weight=1)
         
@@ -718,21 +825,21 @@ class GUI:
             stats_section,
             font=FONTS["heading"],
             text="Statistics:",
-            bg=COLORS["surface"],
+            bg=COLORS["background"],
             fg=COLORS["text_primary"],
             anchor="w"
         )
         stats_label.grid(row=0, column=0, columnspan=2, padx=15, pady=(15, 10), sticky="w")
         
         # Rows display
-        rows_frame = tk.Frame(stats_section, bg=COLORS["surface"])
+        rows_frame = tk.Frame(stats_section, bg=COLORS["background"])
         rows_frame.grid(row=1, column=0, padx=15, pady=10, sticky="w")
         
         rows_title = tk.Label(
             rows_frame,
             font=FONTS["label_small"],
             text="Rows:",
-            bg=COLORS["surface"],
+            bg=COLORS["background"],
             fg=COLORS["text_secondary"]
         )
         rows_title.grid(row=0, column=0, padx=(0, 5))
@@ -741,20 +848,20 @@ class GUI:
             rows_frame,
             font=FONTS["label_medium"],
             text="0",
-            bg=COLORS["surface"],
+            bg=COLORS["background"],
             fg=COLORS["primary"]
         )
         self.rows_label.grid(row=0, column=1)
         
         # File size display
-        size_frame = tk.Frame(stats_section, bg=COLORS["surface"])
+        size_frame = tk.Frame(stats_section, bg=COLORS["background"])
         size_frame.grid(row=1, column=1, padx=15, pady=10, sticky="w")
         
         size_title = tk.Label(
             size_frame,
             font=FONTS["label_small"],
             text="File Size:",
-            bg=COLORS["surface"],
+            bg=COLORS["background"],
             fg=COLORS["text_secondary"]
         )
         size_title.grid(row=0, column=0, padx=(0, 5))
@@ -763,8 +870,8 @@ class GUI:
             size_frame,
             font=FONTS["label_medium"],
             text="0 B",
-            bg=COLORS["surface"],
-            fg=COLORS["primary"]
+            bg=COLORS["background"],
+            fg=COLORS["text_primary"]
         )
         self.file_size_label.grid(row=0, column=1)
 
@@ -774,19 +881,19 @@ class GUI:
 
         self.start_button = self._create_modern_button(
             button_section,
-            "START",
+            "Start",
             self.start,
-            fg_color=COLORS["success"],
-            text_color="white"
+            fg_color=COLORS["primary"],
+            text_color=COLORS["text_primary"]
         )
         self.start_button.grid(row=0, column=0, padx=15)
 
         self.stop_button = self._create_modern_button(
             button_section,
-            "STOP",
+            "Stop",
             self.stop,
-            fg_color=COLORS["error"],
-            text_color="white"
+            fg_color=COLORS["primary"],
+            text_color=COLORS["text_primary"]
         )
         self.stop_button.grid(row=0, column=1, padx=15)
         self.stop_button.config(state="disabled")
@@ -813,11 +920,11 @@ class GUI:
             content_frame,
             text="Device Configuration",
             font=FONTS["heading"],
-            bg=COLORS["surface"],
+            bg=COLORS["background"],
             fg=COLORS["text_primary"],
-            relief="flat",
-            padx=20,
-            pady=15
+            relief="groove",
+            padx=15,
+            pady=10
         )
         device_section.grid(row=0, column=0, pady=15, padx=10, sticky="ew")
         device_section.grid_columnconfigure(1, weight=1)
@@ -827,7 +934,7 @@ class GUI:
             device_section,
             font=FONTS["label"],
             text="IC256-42/35:",
-            bg=COLORS["surface"],
+            bg=COLORS["background"],
             fg=COLORS["text_primary"],
             width=15,
             anchor="w"
@@ -838,19 +945,21 @@ class GUI:
             device_section,
             width=30,
             font=FONTS["entry"],
-            relief="sunken",  # Native Windows entry field appearance
-            borderwidth=2,  # Standard Windows border width
-            highlightthickness=0,  # Remove custom highlight for native look
+            relief="sunken",  # Native entry field appearance
+            borderwidth=1,  # Standard native border width
+            highlightthickness=1,  # Native focus highlight
             insertbackground=COLORS["text_primary"]  # Cursor color
         )
         self.ix256_a_entry.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
+        self.ix256_a_entry.bind('<KeyRelease>', lambda e: self._validate_ip_entry(self.ix256_a_entry))
+        ToolTip(self.ix256_a_entry, "IC256 device IP address (e.g., 192.168.1.100). Click search icon to validate.", 0, 20)
 
         self.ix256_a_button = tk.Button(
             device_section,
             image=self.search_image,
             command=self.update_ix256_a_icon,
-            relief="flat",
-            bg=COLORS["surface"],
+            relief="raised",
+            bg=COLORS["background"],
             cursor="hand2"
         )
         self.ix256_a_button.grid(row=0, column=2, padx=5, pady=10)
@@ -861,7 +970,7 @@ class GUI:
             device_section,
             font=FONTS["label"],
             text="TX2:",
-            bg=COLORS["surface"],
+            bg=COLORS["background"],
             fg=COLORS["text_primary"],
             width=15,
             anchor="w"
@@ -872,19 +981,21 @@ class GUI:
             device_section,
             width=30,
             font=FONTS["entry"],
-            relief="sunken",  # Native Windows entry field appearance
-            borderwidth=2,  # Standard Windows border width
-            highlightthickness=0,  # Remove custom highlight for native look
+            relief="sunken",  # Native entry field appearance
+            borderwidth=1,  # Standard native border width
+            highlightthickness=1,  # Native focus highlight
             insertbackground=COLORS["text_primary"]  # Cursor color
         )
         self.tx2_entry.grid(row=1, column=1, padx=10, pady=10, sticky="ew")
+        self.tx2_entry.bind('<KeyRelease>', lambda e: self._validate_ip_entry(self.tx2_entry))
+        ToolTip(self.tx2_entry, "TX2 device IP address (e.g., 192.168.1.101). Click search icon to validate.", 0, 20)
 
         self.tx2_button = tk.Button(
             device_section,
             image=self.search_image,
             command=self.update_tx2_icon,
-            relief="flat",
-            bg=COLORS["surface"],
+            relief="raised",
+            bg=COLORS["background"],
             cursor="hand2"
         )
         self.tx2_button.grid(row=1, column=2, padx=5, pady=10)
@@ -895,11 +1006,11 @@ class GUI:
             content_frame,
             text="Sampling Configuration",
             font=FONTS["heading"],
-            bg=COLORS["surface"],
+            bg=COLORS["background"],
             fg=COLORS["text_primary"],
-            relief="flat",
-            padx=20,
-            pady=15
+            relief="groove",
+            padx=15,
+            pady=10
         )
         sampling_section.grid(row=1, column=0, pady=15, padx=10, sticky="ew")
         sampling_section.grid_columnconfigure(1, weight=1)
@@ -908,7 +1019,7 @@ class GUI:
             sampling_section,
             font=FONTS["label"],
             text="Sampling Rate (1-6000 Hz):",
-            bg=COLORS["surface"],
+            bg=COLORS["background"],
             fg=COLORS["text_primary"],
             width=20,
             anchor="w"
@@ -923,12 +1034,13 @@ class GUI:
             width=20,
             font=FONTS["entry"],
             textvariable=self.entry_var,
-            relief="sunken",  # Native Windows entry field appearance
-            borderwidth=2,  # Standard Windows border width
-            highlightthickness=0,  # Remove custom highlight for native look
+            relief="sunken",  # Native entry field appearance
+            borderwidth=1,  # Standard native border width
+            highlightthickness=1,  # Native focus highlight
             insertbackground=COLORS["text_primary"]  # Cursor color
         )
         self.sampling_entry.grid(row=0, column=1, padx=10, pady=10, sticky="w")
+        ToolTip(self.sampling_entry, "Sampling rate in Hz (1-6000). Default: 500 Hz", 0, 20)
 
         self.set_up_button = self._create_modern_button(
             sampling_section,
@@ -938,14 +1050,14 @@ class GUI:
             text_color="white"
         )
         self.set_up_button.grid(row=0, column=2, padx=10, pady=10)
-        ToolTip(self.set_up_button, "Set frequency configuration for all devices", 20, -20)
+        ToolTip(self.set_up_button, "Apply sampling rate configuration to all devices", 20, -20)
 
         # Path configuration section
         path_section = tk.LabelFrame(
             content_frame,
             text="File Path Configuration",
             font=FONTS["heading"],
-            bg=COLORS["surface"],
+            bg=COLORS["background"],
             fg=COLORS["text_primary"],
             relief="flat",
             padx=20,
@@ -958,7 +1070,7 @@ class GUI:
             path_section,
             font=FONTS["label"],
             text="Save Path:",
-            bg=COLORS["surface"],
+            bg=COLORS["background"],
             fg=COLORS["text_primary"],
             width=15,
             anchor="w"
@@ -970,19 +1082,20 @@ class GUI:
             width=35,
             font=FONTS["entry"],
             state="readonly",
-            relief="sunken",  # Native Windows entry field appearance
-            borderwidth=2,  # Standard Windows border width
-            highlightthickness=0,  # Remove custom highlight for native look
+            relief="sunken",  # Native entry field appearance
+            borderwidth=1,  # Standard native border width
+            highlightthickness=1,  # Native focus highlight
             readonlybackground=COLORS["background"]  # Slightly different background for readonly
         )
         self.path_entry.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
+        ToolTip(self.path_entry, "Directory where CSV files will be saved. Click Browse to select.", 0, 20)
 
         browse_button = self._create_modern_button(
             path_section,
             "Browse",
             self.select_directory,
-            fg_color=COLORS["text_secondary"],
-            text_color="white"
+            fg_color=COLORS["primary"],
+            text_color=COLORS["text_primary"]
         )
         browse_button.grid(row=0, column=2, padx=5, pady=10)
 
@@ -990,8 +1103,8 @@ class GUI:
             path_section,
             image=self.open_folder_image,
             command=self.open_directory,
-            relief="flat",
-            bg=COLORS["surface"],
+            relief="raised",
+            bg=COLORS["background"],
             cursor="hand2"
         )
         open_button.grid(row=0, column=3, padx=5, pady=10)
@@ -1013,6 +1126,7 @@ class GUI:
             text_color="white"
         )
         save_setting.pack()
+        ToolTip(save_setting, "Save current settings to configuration file", 0, 20)
 
         # Initialize IP addresses
         init_ip(
@@ -1109,10 +1223,24 @@ class GUI:
         log_entry = f"[{timestamp}] [{log_level}] {message}\n"
         
         try:
-            self.log_text.insert(tk.END, log_entry, tag)
-            self.log_text.see(tk.END)
+            # Store in log_content for filtering
+            if not hasattr(self, 'log_content'):
+                self.log_content = []
+            self.log_content.append({'text': log_entry, 'tag': tag})
             
-            # Limit log size to prevent memory issues
+            # Limit log content size to prevent memory issues
+            if len(self.log_content) > 1000:
+                self.log_content = self.log_content[-1000:]
+            
+            # Insert into text widget (respecting current filter)
+            if hasattr(self, 'log_search_entry') and self.log_search_entry.get():
+                # Apply filter
+                self._filter_log()
+            else:
+                self.log_text.insert(tk.END, log_entry, tag)
+                self.log_text.see(tk.END)
+            
+            # Limit displayed log size to prevent memory issues
             lines = int(self.log_text.index('end-1c').split('.')[0])
             if lines > 1000:
                 self.log_text.delete('1.0', f'{lines-1000}.0')
@@ -1123,12 +1251,38 @@ class GUI:
     def render_log_tab(self):
         """Render the log tab with scrollable text widget."""
         # Configure log tab for resizing
-        self.log_tab.grid_rowconfigure(0, weight=1)
+        self.log_tab.grid_rowconfigure(1, weight=1)
         self.log_tab.grid_columnconfigure(0, weight=1)
+        
+        # Create search frame at the top
+        search_frame = tk.Frame(self.log_tab, bg=COLORS["background"])
+        search_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        search_frame.grid_columnconfigure(1, weight=1)
+        
+        search_label = tk.Label(
+            search_frame,
+            text="Search:",
+            font=FONTS["label_small"],
+            bg=COLORS["background"],
+            fg=COLORS["text_primary"]
+        )
+        search_label.grid(row=0, column=0, padx=(0, 5), sticky="w")
+        
+        self.log_search_entry = tk.Entry(
+            search_frame,
+            font=FONTS["entry"],
+            relief="sunken",
+            borderwidth=1,  # Standard native border width
+            highlightthickness=1,  # Native focus highlight
+            insertbackground=COLORS["text_primary"]
+        )
+        self.log_search_entry.grid(row=0, column=1, sticky="ew", padx=5)
+        self.log_search_entry.bind('<KeyRelease>', self._filter_log)
+        ToolTip(self.log_search_entry, "Search log entries (Ctrl+F to focus)", 0, 20)
         
         # Create a frame for the log
         log_frame = tk.Frame(self.log_tab, bg=COLORS["background"])
-        log_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        log_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
         log_frame.grid_rowconfigure(0, weight=1)
         log_frame.grid_columnconfigure(0, weight=1)
         
@@ -1142,7 +1296,7 @@ class GUI:
             wrap=tk.WORD,
             yscrollcommand=scrollbar.set,
             font=FONTS["log"],
-            bg=COLORS["surface"],
+            bg=COLORS["background"],
             fg=COLORS["text_primary"],
             relief="flat",
             borderwidth=1,
@@ -1154,16 +1308,20 @@ class GUI:
         self.log_text.grid(row=0, column=0, sticky="nsew")
         scrollbar.config(command=self.log_text.yview)
         
+        # Store original log content for filtering
+        self.log_content = []
+        
         # Configure text tags for different log levels
         self.log_text.tag_config("error", foreground=COLORS["error"], font=FONTS["log_bold"])
         self.log_text.tag_config("warning", foreground=COLORS["warning"], font=FONTS["log"])
         self.log_text.tag_config("success", foreground=COLORS["success"], font=FONTS["log"])
         self.log_text.tag_config("info", foreground=COLORS["primary"], font=FONTS["log"])
+        self.log_text.tag_config("highlight", background="#FFFF00", foreground=COLORS["text_primary"])
         
         # Add initial log message
         self.log_message("Application started", "INFO")
         
-        # Add clear button - centered
+        # Add button frame with multiple actions
         button_frame = tk.Frame(log_frame, bg=COLORS["background"])
         button_frame.grid(row=1, column=0, columnspan=2, pady=10)
         
@@ -1171,15 +1329,156 @@ class GUI:
             button_frame,
             "Clear Log",
             self.clear_log,
-            fg_color=COLORS["text_secondary"],
-            text_color="white"
+            fg_color=COLORS["primary"],
+            text_color=COLORS["text_primary"]
         )
-        clear_button.pack()
+        clear_button.pack(side=tk.LEFT, padx=5)
+        # No tooltip - button label is clear
+        
+        export_button = self._create_modern_button(
+            button_frame,
+            "Export Log",
+            self._export_log,
+            fg_color=COLORS["primary"],
+            text_color=COLORS["text_primary"]
+        )
+        export_button.pack(side=tk.LEFT, padx=5)
+        # No tooltip - button label is clear
+        
+        copy_button = self._create_modern_button(
+            button_frame,
+            "Copy Selected",
+            self._copy_log_selection,
+            fg_color=COLORS["primary"],
+            text_color=COLORS["text_primary"]
+        )
+        copy_button.pack(side=tk.LEFT, padx=5)
+        # No tooltip - button label is clear
+    
+    def _on_entry_focus_in(self, entry: tk.Entry, placeholder: str):
+        """Handle entry focus in event - clear placeholder."""
+        if entry.get() == placeholder:
+            entry.delete(0, tk.END)
+            entry.config(fg=COLORS["text_primary"])
+    
+    def _on_entry_focus_out(self, entry: tk.Entry, placeholder: str):
+        """Handle entry focus out event - restore placeholder if empty."""
+        if not entry.get().strip():
+            entry.insert(0, placeholder)
+            entry.config(fg=COLORS["text_secondary"])
+    
+    def get_note_value(self) -> str:
+        """Get note entry value, returning empty string if placeholder is present.
+        
+        Returns:
+            Note value or empty string if placeholder
+        """
+        if not hasattr(self, 'note_entry'):
+            return ""
+        note = self.note_entry.get().strip()
+        placeholder = "Enter a note for this data collection session..."
+        if note == placeholder:
+            return ""
+        return note
+    
+    def _validate_ip_entry(self, entry: tk.Entry):
+        """Validate IP address entry and provide visual feedback."""
+        ip = entry.get().strip()
+        # Remove placeholder color if user is typing
+        if entry.cget('fg') == COLORS["text_secondary"]:
+            entry.config(fg=COLORS["text_primary"])
     
     def clear_log(self):
         """Clear the log text widget."""
         self.log_text.delete('1.0', tk.END)
+        self.log_content = []
         self.log_message("Log cleared", "INFO")
+    
+    def _filter_log(self, event=None):
+        """Filter log entries based on search text."""
+        if not hasattr(self, 'log_search_entry'):
+            return
+        
+        search_text = self.log_search_entry.get().lower()
+        
+        # Remove existing highlight tags
+        self.log_text.tag_remove("highlight", "1.0", tk.END)
+        
+        if not search_text:
+            # Show all content
+            self.log_text.delete('1.0', tk.END)
+            for entry in self.log_content:
+                self.log_text.insert(tk.END, entry['text'], entry['tag'])
+            return
+        
+        # Filter and highlight
+        self.log_text.delete('1.0', tk.END)
+        for entry in self.log_content:
+            if search_text in entry['text'].lower():
+                self.log_text.insert(tk.END, entry['text'], entry['tag'])
+                # Highlight search matches
+                start = "1.0"
+                while True:
+                    pos = self.log_text.search(search_text, start, tk.END, nocase=True)
+                    if not pos:
+                        break
+                    end = f"{pos}+{len(search_text)}c"
+                    self.log_text.tag_add("highlight", pos, end)
+                    start = end
+    
+    def _focus_log_search(self, event=None):
+        """Focus the log search entry."""
+        if hasattr(self, 'log_search_entry'):
+            self.log_search_entry.focus_set()
+            self.log_search_entry.select_range(0, tk.END)
+        return "break"
+    
+    def _export_log(self, event=None):
+        """Export log to a text file."""
+        if not hasattr(self, 'log_text'):
+            return
+        
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            title="Export Log"
+        )
+        
+        if filename:
+            try:
+                with open(filename, 'w', encoding='utf-8') as f:
+                    content = self.log_text.get('1.0', tk.END)
+                    f.write(content)
+                self.show_message(f"Log exported to {filename}", "green")
+                self.log_message(f"Log exported to {filename}", "INFO")
+            except Exception as e:
+                error_msg = f"Failed to export log: {str(e)}"
+                self.show_message(error_msg, "red")
+                self.log_message(error_msg, "ERROR")
+        return "break"
+    
+    def _copy_log_selection(self, event=None):
+        """Copy selected text from log to clipboard."""
+        if not hasattr(self, 'log_text'):
+            return
+        
+        try:
+            if self.log_text.tag_ranges(tk.SEL):
+                # Copy selected text
+                selected = self.log_text.get(tk.SEL_FIRST, tk.SEL_LAST)
+                self.root.clipboard_clear()
+                self.root.clipboard_append(selected)
+                self.show_message("Text copied to clipboard", "green")
+            else:
+                # Copy all text if nothing selected
+                all_text = self.log_text.get('1.0', tk.END)
+                self.root.clipboard_clear()
+                self.root.clipboard_append(all_text)
+                self.show_message("All log text copied to clipboard", "green")
+        except Exception as e:
+            error_msg = f"Failed to copy: {str(e)}"
+            self.show_message(error_msg, "red")
+        return "break"
 
     def render(self):
         """Render all GUI components and start the main loop."""
@@ -1190,17 +1489,7 @@ class GUI:
         self.render_date_time()
         self.root.update_idletasks()
         
-        # Set up window close handler if not already set
-        # This allows the application to clean up properly when the window is closed
-        if hasattr(self, '_close_handler_set') and self._close_handler_set:
-            pass  # Already set
-        else:
-            # Store reference to cleanup function if it exists
-            if hasattr(self, 'on_close'):
-                self.root.protocol("WM_DELETE_WINDOW", self.on_close)
-            else:
-                # Default: just destroy the window
-                self.root.protocol("WM_DELETE_WINDOW", self.root.quit)
-            self._close_handler_set = True
+        # Window close handler is already set in _load_window_state()
+        # which calls _on_window_close() that handles saving state and cleanup
         
         self.root.mainloop()

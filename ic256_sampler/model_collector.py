@@ -340,9 +340,8 @@ class ModelCollector:
             self.stop()  # This stops DeviceManager from collecting new data
             
             # Continue processing until all data is written
-            # Process aggressively with smart finish detection and time limit
-            max_iterations = 50000  # Safety limit
-            max_time = 30.0  # Maximum time to spend processing (30 seconds)
+            max_iterations = 50000
+            max_time = 30.0
             start_time = time.time()
             iteration = 0
             consecutive_no_change = 0
@@ -350,7 +349,7 @@ class ModelCollector:
             previous_virtual_rows = 0
             
             # Get initial state
-            self.collect_iteration()  # One iteration to get initial state
+            self.collect_iteration()
             previous_rows_written = self.csv_writer.rows_written
             previous_virtual_rows = self.virtual_database.get_row_count()
             
@@ -358,18 +357,15 @@ class ModelCollector:
                 self.collect_iteration()
                 iteration += 1
                 
-                # Check progress every 25 iterations (reduces overhead)
+                # Check progress every 25 iterations
                 if iteration % 25 == 0:
                     current_rows = self.csv_writer.rows_written
                     current_virtual_rows = self.virtual_database.get_row_count()
                     
-                    # Check if we've caught up: written rows should match virtual rows
-                    # AND virtual rows should not be growing (all IODatabase data processed)
                     if (current_rows == previous_rows_written and 
                         current_virtual_rows == previous_virtual_rows and
-                        current_rows >= current_virtual_rows - 10):  # Allow small difference
+                        current_rows >= current_virtual_rows - 10):
                         consecutive_no_change += 1
-                        # If no change for 8 checks (200 iterations), we're done
                         if consecutive_no_change >= 8:
                             break
                     else:
@@ -377,11 +373,10 @@ class ModelCollector:
                         previous_rows_written = current_rows
                         previous_virtual_rows = current_virtual_rows
                 
-                # Minimal sleep - only every 200 iterations
                 if iteration % 200 == 0:
-                    time.sleep(0.00005)  # 50 microseconds
+                    time.sleep(0.00005)
             
-            # Final processing pass - ensure everything is written
+            # Final processing pass
             for _ in range(15):
                 self.collect_iteration()
                 if _ % 5 == 0:

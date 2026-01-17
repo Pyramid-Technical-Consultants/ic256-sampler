@@ -1266,7 +1266,8 @@ class TestVirtualDatabaseIntegration:
         # Check that rows contain data from reference channel
         for row in rows[:10]:  # Check first 10 rows
             # Reference channel should be in the data by column name
-            assert "Channel Sum" in row.data or "channel_sum" in str(row.data)
+            # Note: Column name might include units like "Channel Sum (nA)"
+            assert any("Channel Sum" in key for key in row.data.keys()) or "channel_sum" in str(row.data)
         
         # Check for empty cells in INTERPOLATED columns only
         # Forward-fill is implemented for INTERPOLATED channels, so they should not have empty cells
