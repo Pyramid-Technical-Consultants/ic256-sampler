@@ -42,6 +42,7 @@ class ModelCollector:
         file_path: str,
         device_name: str,
         note: str,
+        log_callback: Optional[Callable[[str, str], None]] = None,
     ):
         """Initialize the model collector.
         
@@ -53,6 +54,7 @@ class ModelCollector:
             file_path: Full path to CSV output file
             device_name: Name of the device (for CSV metadata)
             note: Note string to include in CSV
+            log_callback: Optional callback function(message: str, level: str) for logging
         """
         self.device_manager = device_manager
         self.model = model
@@ -74,6 +76,7 @@ class ModelCollector:
             reference_channel=reference_channel,
             sampling_rate=sampling_rate,
             columns=self.columns,
+            log_callback=log_callback,
         )
         
         # Create CSVWriter
@@ -357,6 +360,7 @@ class ModelCollector:
         save_folder: str,
         note: str,
         device_statistics: Dict[str, Dict[str, Any]],
+        log_callback: Optional[Callable[[str, str], None]] = None,
     ) -> Optional['ModelCollector']:
         """Create a ModelCollector for data collection (factory method).
         
@@ -367,6 +371,7 @@ class ModelCollector:
             save_folder: Directory to save CSV file
             note: Note string for CSV
             device_statistics: Dictionary to store statistics (will be updated)
+            log_callback: Optional callback function(message: str, level: str) for logging
             
         Returns:
             ModelCollector instance, or None if creation failed
@@ -389,6 +394,7 @@ class ModelCollector:
             file_path=file_path,
             device_name=primary_device_config.device_type.lower(),
             note=note,
+            log_callback=log_callback,
         )
         
         # Initialize statistics - reset to ensure clean state for new acquisition

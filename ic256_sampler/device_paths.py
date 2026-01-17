@@ -47,9 +47,7 @@ IC256_45_PATHS = {
     },
     # HTTP IO Endpoints (used with /io/ prefix)
     "io": {
-        "fan_out": f"/io/{IC256_45_DEVICE_NAME}/fan_out/value.json",
-        "gate_in_signal_conversion_mode": f"/io/{IC256_45_DEVICE_NAME}/gate_in_signal_conversion/mode/value.json",
-        "gate_in_signal_conversion_process_signal": f"/io/{IC256_45_DEVICE_NAME}/gate_in_signal_conversion/process_signal/value.json",
+        "fan_control": f"/io/{IC256_45_DEVICE_NAME}/fan_control/control_mode/value.json",
     },
 }
 

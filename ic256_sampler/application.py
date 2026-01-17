@@ -167,6 +167,18 @@ class Application:
             self.device_manager = DeviceManager()
             self.device_manager.set_status_callback(self._connection_status_callback)
     
+    def _handle_collection_error(self, error_msg: str, enable_button: bool = True) -> None:
+        """Handle collection errors with consistent messaging.
+        
+        Args:
+            error_msg: Error message to display
+            enable_button: Whether to re-enable the start button
+        """
+        show_message_safe(self.window, error_msg, "red")
+        log_message_safe(self.window, error_msg, "ERROR")
+        if enable_button:
+            set_button_state_safe(self.window, "start_button", "normal")
+    
     def _connection_status_callback(self, status_dict: Dict[str, str]) -> None:
         """Callback function for connection status updates from device manager.
         
@@ -210,18 +222,47 @@ class Application:
     
     def _update_elapse_time(self) -> None:
         """Update elapsed time display in GUI."""
+        if not self.window:
+            return
+        
         start_time = time.time()
         while not self.stop_event.is_set():
             elapsed_time = time.time() - start_time
-            minute_time = f"{int(elapsed_time // 60):02d}"
-            second_time = f"{int(elapsed_time % 60):02d}"
-            ticks_time = f"{int((elapsed_time - int(elapsed_time)) * 1000):03d}"
+            # Format time components efficiently
+            minutes = int(elapsed_time // 60)
+            seconds = int(elapsed_time % 60)
+            ticks = int((elapsed_time - int(elapsed_time)) * 1000)
             
+            # Create formatted strings
+            minute_time = f"{minutes:02d}"
+            second_time = f"{seconds:02d}"
+            ticks_time = f"{ticks:03d}"
+            
+            # Update GUI (lambda captures values correctly with defaults)
             safe_gui_update(
                 self.window,
                 lambda m=minute_time, s=second_time, t=ticks_time: self.window.update_elapse_time(m, s, t)
             )
             time.sleep(TIME_UPDATE_INTERVAL)
+    
+    def _create_stats_updater(self) -> StatisticsUpdater:
+        """Create or recreate statistics updater with proper callback.
+        
+        Returns:
+            StatisticsUpdater instance
+        """
+        def update_callback(rows: int, size_str: str):
+            if self.window:
+                safe_gui_update(
+                    self.window,
+                    lambda r=rows, s=size_str: self.window.update_statistics(r, s)
+                )
+        
+        return StatisticsUpdater(
+            self.device_statistics,
+            update_callback,
+            TIME_UPDATE_INTERVAL
+        )
     
     def _update_statistics(self) -> None:
         """Update statistics display (rows and file size) in GUI.
@@ -233,19 +274,9 @@ class Application:
         if not self.window:
             return
         
-        # Create statistics updater if it doesn't exist
+        # Create or reuse statistics updater
         if not self.stats_updater:
-            def update_callback(rows: int, size_str: str):
-                safe_gui_update(
-                    self.window,
-                    lambda r=rows, s=size_str: self.window.update_statistics(r, s)
-                )
-            
-            self.stats_updater = StatisticsUpdater(
-                self.device_statistics,
-                update_callback,
-                TIME_UPDATE_INTERVAL
-            )
+            self.stats_updater = self._create_stats_updater()
         
         # Update collector thread status
         collector_thread_alive = (
@@ -258,20 +289,32 @@ class Application:
         # Run update loop
         self.stats_updater.update_loop(self.stop_event)
     
+    def _stop_previous_threads(self) -> None:
+        """Stop any previous collection threads before starting new acquisition."""
+        # Stop previous statistics thread if running
+        if self.stats_thread and self.stats_thread.is_alive():
+            # Use a separate flag to stop stats thread without affecting collection
+            if self.stats_updater:
+                self.stats_updater.set_stopping(True)
+                self.stats_updater.set_collector_thread_alive(False)
+            # Wait briefly for thread to exit
+            self.stats_thread.join(timeout=0.5)
+            self.stats_thread = None
+        
+        # Reset stats updater for new collection
+        self.stats_updater = None
+    
     def _device_thread(self) -> None:
         """Main device thread that sets up and starts data collection."""
         if not self.window:
             return
         
-        # Stop any previous statistics update thread before starting new acquisition
-        # This prevents multiple threads from updating the GUI with stale data
-        if self.stats_thread and self.stats_thread.is_alive():
-            # Set stop_event to signal old thread to exit
-            self.stop_event.set()
-            # Wait briefly for thread to exit
-            self.stats_thread.join(timeout=0.5)
+        # Stop any previous threads and reset state
+        self._stop_previous_threads()
         
+        # Clear stop event and reset GUI
         self.stop_event.clear()
+        self._stopping = False
         safe_gui_update(self.window, self.window.reset_elapse_time)
         safe_gui_update(self.window, self.window.reset_statistics)
         set_button_state_safe(self.window, "start_button", "disabled")
@@ -293,13 +336,12 @@ class Application:
         # Check if any devices were found
         if len(devices_added) == 0:
             error_msg = "No devices available for data collection. Please configure at least one device and ensure connections are established."
-            show_message_safe(self.window, error_msg, "red")
-            log_message_safe(self.window, "Data collection start failed: No valid devices found", "ERROR")
+            self._handle_collection_error(error_msg)
             log_message_safe(self.window, f"IC256 IP: {ic256_ip}, TX2 IP: {tx2_ip}", "INFO")
-            with self.device_manager._lock:
-                available_connections = list(self.device_manager.connections.keys())
-            log_message_safe(self.window, f"Available connections: {available_connections}", "INFO")
-            set_button_state_safe(self.window, "start_button", "normal")
+            if self.device_manager:
+                with self.device_manager._lock:
+                    available_connections = list(self.device_manager.connections.keys())
+                log_message_safe(self.window, f"Available connections: {available_connections}", "INFO")
             return
         
         # Create collector using factory method
@@ -309,14 +351,12 @@ class Application:
             sampling_rate,
             save_folder,
             note,
-            self.device_statistics
+            self.device_statistics,
+            log_callback=self._log_callback,
         )
         
         if not collector:
-            error_msg = "Failed to create collector"
-            show_message_safe(self.window, error_msg, "red")
-            log_message_safe(self.window, error_msg, "ERROR")
-            set_button_state_safe(self.window, "start_button", "normal")
+            self._handle_collection_error("Failed to create collector")
             return
         
         # Prepare devices for collection
@@ -324,35 +364,32 @@ class Application:
             devices_added,
             sampling_rate,
             self.stop_event,
-            lambda msg, level: log_message_safe(self.window, msg, level)
+            self._log_callback
         ):
-            error_msg = "Failed to prepare devices for collection"
-            show_message_safe(self.window, error_msg, "red")
-            log_message_safe(self.window, error_msg, "ERROR")
-            set_button_state_safe(self.window, "start_button", "normal")
+            self._handle_collection_error("Failed to prepare devices for collection")
             return
         
         # Store collector
         self.collector = collector
 
-        # Show success message
+        # Show success message and update UI
         device_list_str = ", ".join(devices_added)
         verb = "is" if len(devices_added) == 1 else "are"
+        success_msg = f" {device_list_str} {verb} collecting."
         
-        show_message_safe(self.window, f" {device_list_str} {verb} collecting.", "green")
+        show_message_safe(self.window, success_msg, "green")
         log_message_safe(self.window, f"Data collection started: {device_list_str}", "INFO")
         set_button_state_safe(self.window, "stop_button", "normal")
 
         # Start all threads
-        time_thread = threading.Thread(
+        # Elapsed time thread
+        threading.Thread(
             target=self._update_elapse_time,
             name="elapse_time",
             daemon=True
-        )
-        time_thread.start()
+        ).start()
         
-        # Start statistics update thread
-        # Store reference so we can stop it before next acquisition
+        # Statistics update thread
         self.stats_thread = threading.Thread(
             target=self._update_statistics,
             name="statistics_update",
@@ -360,7 +397,7 @@ class Application:
         )
         self.stats_thread.start()
         
-        # Start collection thread
+        # Collection thread
         self.collector_thread = threading.Thread(
             target=collector.run_collection,
             name="model_collector",
@@ -395,11 +432,9 @@ class Application:
             thread.start()
         except Exception as e:
             error_msg = f"Error starting collection: {str(e)}"
-            show_message_safe(self.window, error_msg, "red")
-            log_message_safe(self.window, error_msg, "ERROR")
+            self._handle_collection_error(error_msg)
             import traceback
             traceback.print_exc()
-            set_button_state_safe(self.window, "start_button", "normal")
     
     def start_collection(self) -> None:
         """Start data collection with proper device configuration (non-blocking)."""
@@ -421,7 +456,7 @@ class Application:
         if self.device_manager:
             self.device_manager.restore_fan_setting(
                 ip_address,
-                lambda msg, level: log_message_safe(self.window, msg, level)
+                self._log_callback
             )
     
     def stop_collection(self) -> None:
@@ -477,13 +512,8 @@ class Application:
         else:
             # Thread finished - complete cleanup
             self._stopping = False
-            # Ensure statistics thread is also stopped
-            # Use non-blocking approach - just signal it to stop
-            # It will stop naturally when it sees stop_event is set
-            if self.stats_thread and self.stats_thread.is_alive():
-                self.stop_event.set()
-                # Don't wait for it - it will stop naturally
-                # If we need to ensure it's stopped, we can check in a callback
+            # Statistics thread will stop naturally when it sees stop_event is set
+            # No need to set stop_event again - it's already set
             self._finalize_stop()
     
     def _finalize_stop(self) -> None:
@@ -521,25 +551,22 @@ class Application:
         ic256_ip, tx2_ip, _, _ = self._get_gui_values()
         devices_setup = []
         
-        # Create device manager if needed
-        if self.device_manager is None:
-            self.device_manager = DeviceManager()
+        # Ensure device manager exists
+        self._ensure_device_manager()
         
+        # Setup IC256 device
         if ic256_ip:
-            client = self.device_manager.setup_single_device(
-                ic256_ip, "IC256", sampling_rate,
-                lambda msg, level: log_message_safe(self.window, msg, level)
-            )
-            if client:
+            if self.device_manager.setup_single_device(
+                ic256_ip, "IC256", sampling_rate, self._log_callback
+            ):
                 devices_setup.append("IC256")
         
+        # Setup TX2 device
         if tx2_ip:
             try:
-                client = self.device_manager.setup_single_device(
-                    tx2_ip, "TX2", sampling_rate,
-                    lambda msg, level: log_message_safe(self.window, msg, level)
-                )
-                if client:
+                if self.device_manager.setup_single_device(
+                    tx2_ip, "TX2", sampling_rate, self._log_callback
+                ):
                     devices_setup.append("TX2")
             except Exception as e:
                 log_message_safe(
@@ -583,16 +610,12 @@ class Application:
             def on_window_close():
                 """Handle window close event."""
                 try:
-                    # Clean up resources
                     self.cleanup()
-                    # Destroy the window
                     if self.window and self.window.root:
                         self.window.root.quit()
                         self.window.root.destroy()
                 except Exception as e:
-                    # Force exit if cleanup fails
                     print(f"Error during window close: {e}")
-                    import sys
                     sys.exit(0)
             
             self.window.on_close = on_window_close

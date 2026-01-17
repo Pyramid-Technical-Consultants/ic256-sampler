@@ -83,6 +83,7 @@ class VirtualDatabase:
         reference_channel: str,
         sampling_rate: int,
         columns: List[ColumnDefinition],
+        log_callback: Optional[Callable[[str, str], None]] = None,
     ):
         """Initialize virtual database.
         
@@ -91,6 +92,7 @@ class VirtualDatabase:
             reference_channel: Channel path to use as timing reference
             sampling_rate: Sampling rate in Hz (determines row spacing)
             columns: List of column definitions (defines CSV structure)
+            log_callback: Optional callback function(message: str, level: str) for logging
         """
         self.io_database = io_database
         self.reference_channel = reference_channel
@@ -99,6 +101,12 @@ class VirtualDatabase:
         self.rows: List[VirtualRow] = []
         self._built = False
         self._last_built_time: Optional[float] = None  # Track last built timestamp for incremental builds
+        self._log_callback = log_callback
+        
+        # Track diagnostic information for better error reporting
+        self._last_build_failure_reason: Optional[str] = None
+        self._last_build_failure_time: Optional[float] = None
+        self._consecutive_build_failures: int = 0
         
         # Performance optimization: cache search positions for each channel
         # Maps channel_path -> last search index to enable incremental search
@@ -122,6 +130,61 @@ class VirtualDatabase:
         """
         return [col.name for col in self.columns]
     
+    def _log(self, message: str, level: str = "WARNING") -> None:
+        """Log a message using the callback if available.
+        
+        Args:
+            message: Message to log
+            level: Log level (INFO, WARNING, ERROR)
+        """
+        if self._log_callback:
+            try:
+                self._log_callback(message, level)
+            except Exception:
+                pass  # Don't fail if logging callback has issues
+    
+    def _get_diagnostic_info(self) -> Dict[str, Any]:
+        """Get diagnostic information about the current state.
+        
+        Returns:
+            Dictionary with diagnostic information
+        """
+        total_points = self.io_database.get_total_count()
+        all_channels = self.io_database.get_all_channels()
+        ref_channel = self.io_database.get_channel(self.reference_channel)
+        
+        # Check column channels
+        column_channels = {}
+        missing_channels = []
+        for col_def in self.columns:
+            if col_def.channel_path:
+                channel = self.io_database.get_channel(col_def.channel_path)
+                if channel:
+                    column_channels[col_def.channel_path] = {
+                        'count': channel.count,
+                        'exists': True,
+                    }
+                else:
+                    missing_channels.append(col_def.channel_path)
+                    column_channels[col_def.channel_path] = {
+                        'count': 0,
+                        'exists': False,
+                    }
+        
+        return {
+            'total_io_points': total_points,
+            'total_io_channels': len(all_channels),
+            'reference_channel': self.reference_channel,
+            'reference_channel_exists': ref_channel is not None,
+            'reference_channel_count': ref_channel.count if ref_channel else 0,
+            'column_channels': column_channels,
+            'missing_channels': missing_channels,
+            'virtual_rows': len(self.rows),
+            'built': self._built,
+            'last_failure_reason': self._last_build_failure_reason,
+            'consecutive_failures': self._consecutive_build_failures,
+        }
+    
     def _is_primed(self) -> bool:
         """Check if all channels have at least one data point (primed).
         
@@ -129,28 +192,19 @@ class VirtualDatabase:
         If a channel path is in column definitions but not in IODatabase
         (e.g., not subscribed/collected), it's skipped for priming.
         
+        CRITICAL: Only requires the reference channel to be primed.
+        Other channels are optional - if they don't have data, rows will
+        still be created with None values for those columns.
+        
         Returns:
-            True if all channels with channel_path that exist in IODatabase
-            have at least one data point, False otherwise.
+            True if reference channel has at least one data point, False otherwise.
         """
-        # Get all unique channel paths from column definitions
-        channel_paths = set()
-        for col_def in self.columns:
-            if col_def.channel_path is not None:
-                channel_paths.add(col_def.channel_path)
-        
-        # Get all channels that actually exist in the IODatabase
-        existing_channels = self.io_database.get_all_channels()
-        
-        # Check that each channel that exists in IODatabase has at least one data point
-        for channel_path in channel_paths:
-            # Only check channels that actually exist in IODatabase
-            if channel_path not in existing_channels:
-                continue  # Skip channels that don't exist (not subscribed/collected)
-            
-            channel_data = self.io_database.get_channel(channel_path)
-            if not channel_data or channel_data.count == 0:
-                return False
+        # Only require reference channel to be primed
+        # This allows rows to be created even if some optional channels (like environmental)
+        # haven't received data yet
+        ref_channel = self.io_database.get_channel(self.reference_channel)
+        if not ref_channel or ref_channel.count == 0:
+            return False
         
         return True
     
@@ -171,18 +225,93 @@ class VirtualDatabase:
         
         # Get reference channel data
         ref_channel = self.io_database.get_channel(self.reference_channel)
+        total_io_points = self.io_database.get_total_count()
+        
+        # Check if we have data but can't build - this is the problematic case
+        if total_io_points > 0:
+            if not ref_channel:
+                reason = f"Reference channel '{self.reference_channel}' does not exist in IO database"
+                self._last_build_failure_reason = reason
+                self._consecutive_build_failures += 1
+                if self._consecutive_build_failures == 1 or self._consecutive_build_failures % 10 == 0:
+                    # Log every 10th failure to avoid spam, but always log the first
+                    diag = self._get_diagnostic_info()
+                    available_channels = list(diag['column_channels'].keys())[:5]
+                    channels_str = ', '.join(available_channels)
+                    if len(diag['column_channels']) > 5:
+                        channels_str += "..."
+                    self._log(
+                        f"Virtual database cannot build rows: {reason}. "
+                        f"IO database has {total_io_points} total points across {diag['total_io_channels']} channels. "
+                        f"Available channels: {channels_str}",
+                        "ERROR" if self._consecutive_build_failures >= 10 else "WARNING"
+                    )
+                return
+            
+            if ref_channel.count == 0:
+                reason = f"Reference channel '{self.reference_channel}' exists but has no data points"
+                self._last_build_failure_reason = reason
+                self._consecutive_build_failures += 1
+                if self._consecutive_build_failures == 1 or self._consecutive_build_failures % 10 == 0:
+                    diag = self._get_diagnostic_info()
+                    self._log(
+                        f"Virtual database cannot build rows: {reason}. "
+                        f"IO database has {total_io_points} total points, but reference channel is empty. "
+                        f"Check if data is being collected for '{self.reference_channel}'.",
+                        "ERROR" if self._consecutive_build_failures >= 10 else "WARNING"
+                    )
+                return
+        
         if not ref_channel or ref_channel.count == 0:
-            return  # No data to build from
+            # No data at all - this is expected early on, don't log
+            self._consecutive_build_failures = 0
+            self._last_build_failure_reason = None
+            return
         
         # Check if all channels are primed (have at least one data point)
         if not self._is_primed():
-            return  # Not all channels have data yet, wait for priming
+            # This should not happen if ref_channel.count > 0, but check anyway
+            if ref_channel.count > 0:
+                reason = f"Reference channel has {ref_channel.count} points but priming check failed"
+                self._last_build_failure_reason = reason
+                self._consecutive_build_failures += 1
+                if self._consecutive_build_failures == 1 or self._consecutive_build_failures % 10 == 0:
+                    diag = self._get_diagnostic_info()
+                    self._log(
+                        f"Virtual database cannot build rows: {reason}. "
+                        f"IO database has {total_io_points} total points. "
+                        f"Reference channel '{self.reference_channel}' has {ref_channel.count} points.",
+                        "ERROR" if self._consecutive_build_failures >= 10 else "WARNING"
+                    )
+            return
+        
+        # Reset failure tracking on successful build
+        if self._consecutive_build_failures > 0:
+            self._log(
+                f"Virtual database build succeeded after {self._consecutive_build_failures} failures. "
+                f"Building rows from {ref_channel.count} reference channel points.",
+                "INFO"
+            )
+            self._consecutive_build_failures = 0
+            self._last_build_failure_reason = None
         
         # Cache reference channel
         self._ref_channel_cache = ref_channel
         
         # Get time range efficiently - deques support indexing for first/last
         if len(ref_channel.data_points) == 0:
+            # This should not happen if we passed the checks above, but handle it
+            total_io_points = self.io_database.get_total_count()
+            if total_io_points > 0:
+                reason = f"Reference channel data_points deque is empty despite count={ref_channel.count}"
+                self._last_build_failure_reason = reason
+                self._consecutive_build_failures += 1
+                if self._consecutive_build_failures == 1 or self._consecutive_build_failures % 10 == 0:
+                    self._log(
+                        f"Virtual database cannot build rows: {reason}. "
+                        f"This may indicate a data structure inconsistency.",
+                        "ERROR" if self._consecutive_build_failures >= 10 else "WARNING"
+                    )
             return
         first_elapsed = ref_channel.data_points[0].elapsed_time
         last_elapsed = ref_channel.data_points[-1].elapsed_time
@@ -1344,13 +1473,72 @@ class VirtualDatabase:
         self._ref_channel_cache = self.io_database.get_channel(self.reference_channel)
         ref_channel = self._ref_channel_cache
         
+        total_io_points = self.io_database.get_total_count()
+        
+        # Check if we have data but can't rebuild - this is the problematic case
+        if total_io_points > 0:
+            if not ref_channel:
+                reason = f"Reference channel '{self.reference_channel}' does not exist in IO database (rebuild)"
+                self._last_build_failure_reason = reason
+                self._consecutive_build_failures += 1
+                if self._consecutive_build_failures == 1 or self._consecutive_build_failures % 50 == 0:
+                    # Log less frequently for rebuild failures to avoid spam
+                    diag = self._get_diagnostic_info()
+                    self._log(
+                        f"Virtual database cannot rebuild rows: {reason}. "
+                        f"IO database has {total_io_points} total points. "
+                        f"Virtual database has {len(self.rows)} existing rows.",
+                        "ERROR" if self._consecutive_build_failures >= 50 else "WARNING"
+                    )
+                return
+            
+            if ref_channel.count == 0:
+                reason = f"Reference channel '{self.reference_channel}' exists but has no data points (rebuild)"
+                self._last_build_failure_reason = reason
+                self._consecutive_build_failures += 1
+                if self._consecutive_build_failures == 1 or self._consecutive_build_failures % 50 == 0:
+                    diag = self._get_diagnostic_info()
+                    self._log(
+                        f"Virtual database cannot rebuild rows: {reason}. "
+                        f"IO database has {total_io_points} total points, but reference channel is empty. "
+                        f"Virtual database has {len(self.rows)} existing rows.",
+                        "ERROR" if self._consecutive_build_failures >= 50 else "WARNING"
+                    )
+                return
+        
         if not ref_channel or ref_channel.count == 0:
-            return  # No data to build from
+            # No data at all - this is expected early on, don't log
+            # Only reset failure tracking if we were previously built
+            if self._built:
+                self._consecutive_build_failures = 0
+                self._last_build_failure_reason = None
+            return
         
         # For incremental rebuild, we only need the last data point to check if there's new data
         # We can avoid creating a full snapshot if we just need to check the last point
         if not ref_channel.data_points:
+            # This should not happen if ref_channel.count > 0, but handle it
+            if total_io_points > 0 and ref_channel.count > 0:
+                reason = f"Reference channel data_points deque is empty despite count={ref_channel.count} (rebuild)"
+                self._last_build_failure_reason = reason
+                self._consecutive_build_failures += 1
+                if self._consecutive_build_failures == 1 or self._consecutive_build_failures % 50 == 0:
+                    self._log(
+                        f"Virtual database cannot rebuild rows: {reason}. "
+                        f"This may indicate a data structure inconsistency.",
+                        "ERROR" if self._consecutive_build_failures >= 50 else "WARNING"
+                    )
             return
+        
+        # Reset failure tracking on successful rebuild
+        if self._consecutive_build_failures > 0:
+            self._log(
+                f"Virtual database rebuild succeeded after {self._consecutive_build_failures} failures. "
+                f"Rebuilding from {ref_channel.count} reference channel points, {len(self.rows)} existing rows.",
+                "INFO"
+            )
+            self._consecutive_build_failures = 0
+            self._last_build_failure_reason = None
         
         # Get last data point without full snapshot (more efficient)
         # Access last element directly from deque (O(1) operation)
@@ -1398,26 +1586,131 @@ class VirtualDatabase:
                 return
         
         # Pre-compute snapshots for incremental rebuild (similar to build)
-        # This avoids repeated deque-to-list conversions during the rebuild loop
-        # Also pre-compute elapsed_times and timestamps lists for binary search efficiency
+        # OPTIMIZATION: Only create snapshots for data we actually need
+        # For incremental rebuild, we only need data from start_time onwards
+        # This avoids creating expensive full snapshots when deques are large
         channel_snapshots: Dict[str, List[DataPoint]] = {}
         channel_elapsed_times: Dict[str, List[float]] = {}
         channel_timestamps: Dict[str, List[int]] = {}  # For synchronized channels
+        
+        # Calculate time window for incremental snapshot (only need data from start_time - some margin)
+        # This dramatically reduces snapshot size when deques are large
+        time_margin = row_interval * 100  # 100 row intervals of margin for interpolation
+        snapshot_start_time = max(0.0, start_time - time_margin) if self._last_built_time is not None else 0.0
+        
         for col_def in self.columns:
             if col_def.channel_path and col_def.channel_path not in channel_snapshots:
                 channel_data = self.io_database.get_channel(col_def.channel_path)
-                if channel_data:
-                    snapshot = list(channel_data.data_points)
+                if channel_data and channel_data.count > 0:
+                    # OPTIMIZATION: Only snapshot data points we actually need
+                    # For incremental rebuild, we only need points from snapshot_start_time onwards
+                    # This avoids expensive full deque-to-list conversion
+                    # SAFETY: Limit snapshot size to prevent hangs (max 100k points per channel)
+                    max_snapshot_size = 100000
+                    
+                    if channel_data.count > 1000 and self._last_built_time is not None:
+                        # Large dataset - create incremental snapshot
+                        # Find the first point we need using binary search on elapsed times
+                        # We'll create a partial snapshot starting from snapshot_start_time
+                        snapshot = []
+                        elapsed_times_list = []
+                        timestamps_list = []
+                        
+                        # Use binary search to find starting point efficiently
+                        # Since deques don't support indexing, we need to iterate
+                        # But we can skip early points if we know the elapsed time
+                        # SAFETY: Limit iteration to prevent hangs
+                        points_checked = 0
+                        for point in channel_data.data_points:
+                            points_checked += 1
+                            # Safety: if we've checked too many points, use a simpler approach
+                            if points_checked > max_snapshot_size * 2:
+                                # Too many points - just use the last N points
+                                snapshot = list(channel_data.data_points)[-max_snapshot_size:]
+                                elapsed_times_list = [p.elapsed_time for p in snapshot]
+                                if col_def.policy == ChannelPolicy.SYNCHRONIZED:
+                                    timestamps_list = [p.timestamp_ns for p in snapshot]
+                                break
+                            
+                            if point.elapsed_time >= snapshot_start_time:
+                                snapshot.append(point)
+                                elapsed_times_list.append(point.elapsed_time)
+                                if col_def.policy == ChannelPolicy.SYNCHRONIZED:
+                                    timestamps_list.append(point.timestamp_ns)
+                                
+                                # Safety: limit snapshot size
+                                if len(snapshot) >= max_snapshot_size:
+                                    break
+                        
+                        # If we didn't find enough points, fall back to limited full snapshot
+                        # (this handles edge cases where time hasn't advanced much)
+                        if len(snapshot) < 10:
+                            # Use only the most recent points to avoid huge snapshots
+                            if channel_data.count > max_snapshot_size:
+                                snapshot = list(channel_data.data_points)[-max_snapshot_size:]
+                            else:
+                                snapshot = list(channel_data.data_points)
+                            elapsed_times_list = [p.elapsed_time for p in snapshot]
+                            if col_def.policy == ChannelPolicy.SYNCHRONIZED:
+                                timestamps_list = [p.timestamp_ns for p in snapshot]
+                    else:
+                        # Small dataset - create full snapshot (cheap)
+                        # But still limit size for safety
+                        if channel_data.count > max_snapshot_size:
+                            snapshot = list(channel_data.data_points)[-max_snapshot_size:]
+                        else:
+                            snapshot = list(channel_data.data_points)
+                        elapsed_times_list = [p.elapsed_time for p in snapshot]
+                        if col_def.policy == ChannelPolicy.SYNCHRONIZED:
+                            timestamps_list = [p.timestamp_ns for p in snapshot]
+                    
                     channel_snapshots[col_def.channel_path] = snapshot
-                    # Pre-compute elapsed_times for binary search
-                    channel_elapsed_times[col_def.channel_path] = [p.elapsed_time for p in snapshot]
-                    # Pre-compute timestamps for synchronized channels
+                    channel_elapsed_times[col_def.channel_path] = elapsed_times_list
                     if col_def.policy == ChannelPolicy.SYNCHRONIZED:
-                        channel_timestamps[col_def.channel_path] = [p.timestamp_ns for p in snapshot]
+                        channel_timestamps[col_def.channel_path] = timestamps_list
         
         # Also snapshot reference channel and pre-compute its elapsed_times
-        ref_snapshot = list(ref_channel.data_points)
-        ref_elapsed_times = [p.elapsed_time for p in ref_snapshot]
+        # OPTIMIZATION: Use incremental snapshot for reference channel too
+        # SAFETY: Limit snapshot size to prevent hangs
+        max_snapshot_size = 100000
+        
+        if ref_channel.count > 1000 and self._last_built_time is not None:
+            # Large dataset - create incremental snapshot
+            ref_snapshot = []
+            ref_elapsed_times = []
+            points_checked = 0
+            for point in ref_channel.data_points:
+                points_checked += 1
+                # Safety: if we've checked too many points, use a simpler approach
+                if points_checked > max_snapshot_size * 2:
+                    # Too many points - just use the last N points
+                    ref_snapshot = list(ref_channel.data_points)[-max_snapshot_size:]
+                    ref_elapsed_times = [p.elapsed_time for p in ref_snapshot]
+                    break
+                
+                if point.elapsed_time >= snapshot_start_time:
+                    ref_snapshot.append(point)
+                    ref_elapsed_times.append(point.elapsed_time)
+                    # Safety: limit snapshot size
+                    if len(ref_snapshot) >= max_snapshot_size:
+                        break
+            
+            # If we didn't find enough points, fall back to limited full snapshot
+            if len(ref_snapshot) < 10:
+                # Use only the most recent points to avoid huge snapshots
+                if ref_channel.count > max_snapshot_size:
+                    ref_snapshot = list(ref_channel.data_points)[-max_snapshot_size:]
+                else:
+                    ref_snapshot = list(ref_channel.data_points)
+                ref_elapsed_times = [p.elapsed_time for p in ref_snapshot]
+        else:
+            # Small dataset - create full snapshot (cheap)
+            # But still limit size for safety
+            if ref_channel.count > max_snapshot_size:
+                ref_snapshot = list(ref_channel.data_points)[-max_snapshot_size:]
+            else:
+                ref_snapshot = list(ref_channel.data_points)
+            ref_elapsed_times = [p.elapsed_time for p in ref_snapshot]
         
         # Pre-index column data to avoid dictionary lookups in hot loop
         # Cache all attributes to reduce attribute access overhead
