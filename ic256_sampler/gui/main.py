@@ -81,17 +81,16 @@ class GUI:
     
     def _setup_keyboard_shortcuts(self):
         """Set up keyboard shortcuts for common actions."""
-        # F9: Start collection
-        self.root.bind('<F9>', lambda e: self.start() if hasattr(self, 'main_tab') and hasattr(self.main_tab, 'start_button') and self.main_tab.start_button['state'] == 'normal' else None)
-        
-        # F10 or Esc: Stop collection
-        self.root.bind('<F10>', lambda e: self.stop() if hasattr(self, 'main_tab') and hasattr(self.main_tab, 'stop_button') and self.main_tab.stop_button['state'] == 'normal' else None)
-        self.root.bind('<Escape>', lambda e: self.stop() if hasattr(self, 'main_tab') and hasattr(self.main_tab, 'stop_button') and self.main_tab.stop_button['state'] == 'normal' else None)
-        
-        # Ctrl+Shift+S: Export log
+        def can_start():
+            return hasattr(self, 'main_tab') and hasattr(self.main_tab, 'start_button') and self.main_tab.start_button['state'] == 'normal'
+
+        def can_stop():
+            return hasattr(self, 'main_tab') and hasattr(self.main_tab, 'stop_button') and self.main_tab.stop_button['state'] == 'normal'
+
+        self.root.bind('<F9>', lambda e: self.start() if can_start() else None)
+        self.root.bind('<F10>', lambda e: self.stop() if can_stop() else None)
+        self.root.bind('<Escape>', lambda e: self.stop() if can_stop() else None)
         self.root.bind('<Control-Shift-S>', lambda e: self.log_tab._export_log() if hasattr(self, 'log_tab') else None)
-        
-        # Ctrl+F: Focus search in log tab
         self.root.bind('<Control-f>', lambda e: self.log_tab._focus_log_search() if hasattr(self, 'log_tab') else None)
     
     # Placeholder methods - to be overridden by application
@@ -294,9 +293,7 @@ class GUI:
     def update_date_time(self):
         """Update the date/time display."""
         now = datetime.now()
-        current_date = now.strftime("%Y-%m-%d")
-        current_time = now.strftime("%H:%M:%S")
-        self.display_time.config(text=f"{current_date} {current_time}")
+        self.display_time.config(text=f"{now.strftime('%Y-%m-%d %H:%M:%S')}")
         self.root.after(1000, self.update_date_time)
     
     def update_connection_status(self, status_dict: Dict[str, str]) -> None:

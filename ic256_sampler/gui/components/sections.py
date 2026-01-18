@@ -7,7 +7,7 @@ from ..styles import COLORS, FONTS
 
 class StandardSection:
     """Factory for creating standard LabelFrame sections with consistent styling."""
-    
+
     @staticmethod
     def create(
         parent: tk.Widget,
@@ -17,23 +17,9 @@ class StandardSection:
         sticky: str = "ew",
         pady: tuple = (0, 15),
         padx: tuple = (0, 0),
-        **kwargs
+        **kwargs,
     ) -> tk.LabelFrame:
-        """Create a standard LabelFrame section.
-        
-        Args:
-            parent: Parent widget
-            text: Section title text
-            row: Grid row position
-            column: Grid column position
-            sticky: Grid sticky option
-            pady: Vertical padding tuple (top, bottom)
-            padx: Horizontal padding tuple (left, right)
-            **kwargs: Additional LabelFrame options
-            
-        Returns:
-            Configured LabelFrame widget
-        """
+        """Create a standard LabelFrame section."""
         section = tk.LabelFrame(
             parent,
             text=text,
@@ -43,9 +29,8 @@ class StandardSection:
             relief="groove",
             padx=10,
             pady=10,
-            **kwargs
+            **kwargs,
         )
         section.grid(row=row, column=column, padx=padx, pady=pady, sticky=sticky)
-        # Ensure the section's column in parent can expand
         parent.grid_columnconfigure(column, weight=1)
         return section

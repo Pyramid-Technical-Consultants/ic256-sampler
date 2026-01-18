@@ -8,89 +8,53 @@ from ..styles import COLORS
 
 class ScrollableFrame:
     """A scrollable frame using Canvas with automatic scrollbar."""
-    
+
     def __init__(self, parent: tk.Widget):
-        """Create a scrollable frame.
-        
-        Args:
-            parent: Parent widget
-        """
-        # Create canvas frame
+        """Create a scrollable frame."""
         self.canvas_frame = tk.Frame(parent, bg=COLORS["background"])
         self.canvas_frame.grid(row=0, column=0, sticky="nsew")
         self.canvas_frame.grid_rowconfigure(0, weight=1)
         self.canvas_frame.grid_columnconfigure(0, weight=1)
-        
-        # Create canvas
-        self.canvas = tk.Canvas(
-            self.canvas_frame,
-            bg=COLORS["background"],
-            highlightthickness=0
-        )
+
+        self.canvas = tk.Canvas(self.canvas_frame, bg=COLORS["background"], highlightthickness=0)
         self.canvas.grid(row=0, column=0, sticky="nsew")
-        
-        # Create scrollbar
-        self.scrollbar = tk.Scrollbar(
-            self.canvas_frame,
-            orient="vertical",
-            command=self.canvas.yview
-        )
+
+        self.scrollbar = tk.Scrollbar(self.canvas_frame, orient="vertical", command=self.canvas.yview)
         self.scrollbar.grid(row=0, column=1, sticky="ns")
-        
-        # Configure canvas scrolling
+
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
-        
-        # Create scrollable frame inside canvas
+
         self.scrollable_frame = tk.Frame(self.canvas, bg=COLORS["background"])
-        # Configure scrollable frame to allow expansion
         self.scrollable_frame.grid_columnconfigure(0, weight=1)
-        self.canvas_window = self.canvas.create_window(
-            (0, 0),
-            window=self.scrollable_frame,
-            anchor="nw"
-        )
-        
-        # Update scroll region and width when frame size changes
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+
         def on_frame_configure(event):
-            # Update canvas scroll region
             self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-            # Update scrollable frame width to match canvas
             canvas_width = self.canvas.winfo_width()
             if canvas_width > 1:
                 self.canvas.itemconfig(self.canvas_window, width=canvas_width)
-        
-        self.scrollable_frame.bind("<Configure>", on_frame_configure)
-        
-        # Update width when canvas resizes
+
         def on_canvas_configure(event):
-            canvas_width = event.width
-            if canvas_width > 1:
-                self.canvas.itemconfig(self.canvas_window, width=canvas_width)
-        
+            if event.width > 1:
+                self.canvas.itemconfig(self.canvas_window, width=event.width)
+
+        self.scrollable_frame.bind("<Configure>", on_frame_configure)
         self.canvas.bind("<Configure>", on_canvas_configure)
-        
-        # Enable mousewheel scrolling
+
         self._setup_mousewheel()
-    
+
     def _setup_mousewheel(self):
         """Set up mousewheel scrolling for the canvas."""
         def on_mousewheel(event):
-            # Windows and Linux
             if platform.system() in ["Windows", "Linux"]:
                 self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-            # macOS
             else:
                 self.canvas.yview_scroll(int(-1 * event.delta), "units")
-        
-        # Bind to canvas
+
         self.canvas.bind_all("<MouseWheel>", on_mousewheel)
         self.canvas.bind_all("<Button-4>", lambda e: self.canvas.yview_scroll(-1, "units"))
         self.canvas.bind_all("<Button-5>", lambda e: self.canvas.yview_scroll(1, "units"))
-    
+
     def get_frame(self) -> tk.Frame:
-        """Get the scrollable frame to add widgets to.
-        
-        Returns:
-            The scrollable frame widget
-        """
+        """Get the scrollable frame to add widgets to."""
         return self.scrollable_frame
