@@ -39,6 +39,7 @@ def create_mock_window(
     mock_window.path_entry.get = Mock(return_value=save_path)
     mock_window.sampling_entry = Mock()
     mock_window.sampling_entry.get = Mock(return_value=sampling_rate)
+    mock_window.get_note_value = Mock(return_value=note)
     mock_window.root = Mock()
     mock_window.root.after = Mock()
     mock_window.reset_elapse_time = Mock()

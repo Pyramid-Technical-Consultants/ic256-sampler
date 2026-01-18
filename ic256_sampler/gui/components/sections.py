@@ -16,6 +16,7 @@ class StandardSection:
         column: int = 0,
         sticky: str = "ew",
         pady: tuple = (0, 15),
+        padx: tuple = (0, 0),
         **kwargs
     ) -> tk.LabelFrame:
         """Create a standard LabelFrame section.
@@ -27,6 +28,7 @@ class StandardSection:
             column: Grid column position
             sticky: Grid sticky option
             pady: Vertical padding tuple (top, bottom)
+            padx: Horizontal padding tuple (left, right)
             **kwargs: Additional LabelFrame options
             
         Returns:
@@ -43,7 +45,7 @@ class StandardSection:
             pady=10,
             **kwargs
         )
-        section.grid(row=row, column=column, pady=pady, sticky=sticky)
+        section.grid(row=row, column=column, padx=padx, pady=pady, sticky=sticky)
         # Ensure the section's column in parent can expand
         parent.grid_columnconfigure(column, weight=1)
         return section

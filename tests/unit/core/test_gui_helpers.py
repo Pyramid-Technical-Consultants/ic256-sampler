@@ -3,7 +3,7 @@
 import pytest
 import threading
 from unittest.mock import Mock, patch
-from ic256_sampler.gui_helpers import (
+from ic256_sampler.gui.utils import (
     safe_gui_update,
     log_message_safe,
     show_message_safe,

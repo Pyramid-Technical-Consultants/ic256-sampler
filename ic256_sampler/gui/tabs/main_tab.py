@@ -3,7 +3,8 @@
 import tkinter as tk
 from typing import Callable, Optional
 
-from ..styles import COLORS, FONTS, ENTRY_PADY
+from ..styles import COLORS, FONTS
+from ..styles.sizes import ENTRY_PADY, TAB_CONTENT_PADX
 from ..components import (
     StandardButton,
     StandardSection,
@@ -12,6 +13,7 @@ from ..components import (
     LabelValuePair,
     ToolTip,
     EntryWithPlaceholder,
+    TimeDisplay,
 )
 
 
@@ -44,9 +46,14 @@ class MainTab:
         
         # Create scrollable frame
         scrollable = ScrollableFrame(self.parent)
-        main_container = scrollable.get_frame()
-        main_container.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
+        scrollable_frame = scrollable.get_frame()
+        
+        # Create padded container for consistent spacing
+        main_container = tk.Frame(scrollable_frame, bg=COLORS["background"])
+        main_container.grid(row=0, column=0, padx=(TAB_CONTENT_PADX, TAB_CONTENT_PADX), sticky="nsew")
+        # Configure grid for sections - column 0 should expand
         main_container.grid_columnconfigure(0, weight=1)
+        scrollable_frame.grid_columnconfigure(0, weight=1)
         
         # Note section
         self._create_note_section(main_container)
@@ -78,7 +85,8 @@ class MainTab:
         )
         self.note_entry_wrapper = note_placeholder
         self.note_entry = note_placeholder.get_widget()
-        self.note_entry.grid(row=0, column=0, sticky="ew", padx=5, pady=ENTRY_PADY)
+        # Entry is wrapped in frame for consistent height, place the frame
+        note_placeholder.entry_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=ENTRY_PADY)
         ToolTip(self.note_entry, "Optional note to include in the CSV file name and metadata", 0, 20)
     
     def _create_time_section(self, parent: tk.Widget):
@@ -90,56 +98,7 @@ class MainTab:
             column=0
         )
         
-        time_display_frame = tk.Frame(time_section, bg=COLORS["background"])
-        time_display_frame.grid(row=0, column=0, padx=5, pady=5)
-        
-        self.minute = tk.Label(
-            time_display_frame,
-            font=FONTS["time_display"],
-            text="00",
-            bg=COLORS["background"],
-            fg=COLORS["text_primary"],
-            width=3
-        )
-        self.minute.grid(row=0, column=0, padx=2)
-        
-        colon_1 = tk.Label(
-            time_display_frame,
-            font=FONTS["time_display"],
-            text=":",
-            bg=COLORS["background"],
-            fg=COLORS["text_primary"]
-        )
-        colon_1.grid(row=0, column=1, padx=2)
-        
-        self.second = tk.Label(
-            time_display_frame,
-            font=FONTS["time_display"],
-            text="00",
-            bg=COLORS["background"],
-            fg=COLORS["text_primary"],
-            width=3
-        )
-        self.second.grid(row=0, column=2, padx=2)
-        
-        colon_2 = tk.Label(
-            time_display_frame,
-            font=FONTS["time_display"],
-            text=":",
-            bg=COLORS["background"],
-            fg=COLORS["text_primary"]
-        )
-        colon_2.grid(row=0, column=3, padx=2)
-        
-        self.ticks = tk.Label(
-            time_display_frame,
-            font=FONTS["time_display"],
-            text="000",
-            bg=COLORS["background"],
-            fg=COLORS["text_primary"],
-            width=4
-        )
-        self.ticks.grid(row=0, column=4, padx=2)
+        self.time_display = TimeDisplay(time_section)
     
     def _create_statistics_section(self, parent: tk.Widget):
         """Create statistics display section."""
@@ -180,10 +139,12 @@ class MainTab:
     
     def _create_button_section(self, parent: tk.Widget):
         """Create button section."""
+        button_frame = tk.Frame(parent, bg=COLORS["background"])
+        button_frame.grid(row=3, column=0, pady=(0, 0))
         button_group = ButtonGroup(
-            parent,
+            button_frame,
             [("Start", self.start_callback), ("Stop", self.stop_callback)],
-            row=3,
+            row=0,
             column=0
         )
         self.start_button = button_group.get_button(0)
@@ -203,15 +164,11 @@ class MainTab:
     
     def update_elapse_time(self, minute: str, second: str, ticks: str):
         """Update elapsed time display."""
-        self.minute.config(text=minute)
-        self.second.config(text=second)
-        self.ticks.config(text=ticks)
+        self.time_display.update(minute, second, ticks)
     
     def reset_elapse_time(self):
         """Reset elapsed time display to zero."""
-        self.minute.config(text="00")
-        self.second.config(text="00")
-        self.ticks.config(text="000")
+        self.time_display.reset()
     
     def update_statistics(self, rows: int, file_size: str):
         """Update statistics display."""

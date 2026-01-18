@@ -7,6 +7,7 @@ from typing import Optional
 
 from ..styles import COLORS, FONTS
 from ..components import StandardButton, StandardEntry, StandardLabel, ButtonGroup, ToolTip
+from ..utils import copy_to_clipboard
 
 
 class LogTab:
@@ -54,7 +55,9 @@ class LogTab:
         search_label.grid(row=0, column=0, padx=(0, 10), sticky="w")
         
         self.log_search_entry = StandardEntry.create(search_frame, width=40)
-        self.log_search_entry.grid(row=0, column=1, sticky="ew", padx=(0, 0))
+        # Place the frame wrapper for consistent height
+        self.log_search_entry._entry_frame.grid(row=0, column=1, sticky="ew", padx=(0, 0))
+        # Bind events to the actual entry widget
         self.log_search_entry.bind('<KeyRelease>', self._filter_log)
         ToolTip(self.log_search_entry, "Search log entries (Ctrl+F to focus)", 0, 20)
     
@@ -245,17 +248,15 @@ class LogTab:
             if self.log_text.tag_ranges(tk.SEL):
                 # Copy selected text
                 selected = self.log_text.get(tk.SEL_FIRST, tk.SEL_LAST)
-                root.clipboard_clear()
-                root.clipboard_append(selected)
-                if self.show_message_callback:
-                    self.show_message_callback("Text copied to clipboard", "green")
+                if copy_to_clipboard(root, selected):
+                    if self.show_message_callback:
+                        self.show_message_callback("Text copied to clipboard", "green")
             else:
                 # Copy all text if nothing selected
                 all_text = self.log_text.get('1.0', tk.END)
-                root.clipboard_clear()
-                root.clipboard_append(all_text)
-                if self.show_message_callback:
-                    self.show_message_callback("All log text copied to clipboard", "green")
+                if copy_to_clipboard(root, all_text):
+                    if self.show_message_callback:
+                        self.show_message_callback("All log text copied to clipboard", "green")
         except Exception as e:
             error_msg = f"Failed to copy: {str(e)}"
             if self.show_message_callback:

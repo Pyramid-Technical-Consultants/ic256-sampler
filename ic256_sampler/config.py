@@ -43,6 +43,49 @@ data_json_init = {
 }
 
 
+def _load_config() -> dict:
+    """Load configuration from file, creating default if needed.
+    
+    Returns:
+        Configuration dictionary
+    """
+    config = data_json_init.copy()
+    
+    try:
+        if file_path.exists():
+            with open(file_path, "r") as file:
+                data = json.load(file)
+                if data:  # Only update if data is not empty
+                    config.update(data)
+                else:
+                    # Empty file, write defaults
+                    _save_config(config)
+        else:
+            # File doesn't exist, create with defaults
+            _save_config(config)
+    except (json.JSONDecodeError, IOError, OSError):
+        # Invalid JSON or I/O error, try to write defaults
+        try:
+            _save_config(config)
+        except (IOError, OSError):
+            pass  # If we can't write, continue with defaults
+    
+    return config
+
+
+def _save_config(config: dict) -> None:
+    """Save configuration to file.
+    
+    Args:
+        config: Configuration dictionary to save
+    """
+    try:
+        with open(file_path, "w") as file:
+            json.dump(config, file, indent=4)
+    except (IOError, OSError):
+        pass  # Silently fail if we can't write
+
+
 def init_ip(
     ix256_a_entry: tk.Entry,
     tx2_entry: tk.Entry,
@@ -57,38 +100,18 @@ def init_ip(
         path_entry: Save path entry widget
         sampling_entry: Sampling rate entry widget
     """
-    try:
-        # Read file JSON
-        with open(file_path, "r") as file:
-            data = json.load(file)
-
-        if data == {}:
-            with open(file_path, "w") as file:
-                json.dump(data_json_init, file, indent=4)
-
-        data_json_init.update(data)
-    except (FileNotFoundError, json.JSONDecodeError, IOError, OSError):
-        # Config file doesn't exist or is invalid, create default
-        try:
-            with open(file_path, "w") as file:
-                json.dump(data_json_init, file, indent=4)
-        except (IOError, OSError):
-            # If we can't write the config file, continue with defaults
-            pass
-
-    # Init value IC256-45 IP
-    ix256_a_entry.insert(0, f"{data_json_init['ic256_45']}")
-
-    # Init value TX2 IP
-    tx2_entry.insert(0, f"{data_json_init['tx2']}")
-
+    config = _load_config()
+    
+    # Initialize entry widgets
+    ix256_a_entry.insert(0, str(config['ic256_45']))
+    tx2_entry.insert(0, str(config['tx2']))
+    
     # Init save path (readonly mode)
     path_entry.config(state="normal")
-    path_entry.insert(0, f"{data_json_init['save_path']}")
+    path_entry.insert(0, str(config['save_path']))
     path_entry.config(state="readonly")
-
-    # Init sampling rate
-    sampling_entry.insert(0, f"{data_json_init['sampling_rate']}")
+    
+    sampling_entry.insert(0, str(config['sampling_rate']))
 
 
 def update_file_json(
@@ -105,26 +128,23 @@ def update_file_json(
         path_entry: Save path entry widget
         sampling_entry: Sampling rate entry widget
     """
-    try:
-        # Read file JSON
-        with open(file_path, "r") as file:
-            data = json.load(file)
-
-        # Update data
-        data["ic256_45"] = (
-            ix256_a_entry.get() if is_valid_ipv4(ix256_a_entry.get()) else data["ic256_45"]
-        )
-
-        data["tx2"] = tx2_entry.get() if is_valid_ipv4(tx2_entry.get()) else data["tx2"]
-        data["save_path"] = path_entry.get() if path_entry.get() else data["save_path"]
-
-        data["sampling_rate"] = (
-            sampling_entry.get() if sampling_entry.get() else data["sampling_rate"]
-        )
-
-        # Write to file JSON
-        with open(file_path, "w") as file:
-            json.dump(data, file, indent=4)
-    except (FileNotFoundError, json.JSONDecodeError, IOError, OSError) as e:
-        # Log error but don't crash - user can retry
-        print(f"Warning: Failed to update config file: {str(e)}")
+    config = _load_config()
+    
+    # Update values if valid, otherwise keep existing
+    ic256_value = ix256_a_entry.get()
+    if ic256_value and is_valid_ipv4(ic256_value):
+        config["ic256_45"] = ic256_value
+    
+    tx2_value = tx2_entry.get()
+    if tx2_value and is_valid_ipv4(tx2_value):
+        config["tx2"] = tx2_value
+    
+    path_value = path_entry.get()
+    if path_value:
+        config["save_path"] = path_value
+    
+    sampling_value = sampling_entry.get()
+    if sampling_value:
+        config["sampling_rate"] = sampling_value
+    
+    _save_config(config)

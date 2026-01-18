@@ -9,6 +9,7 @@ from .scrollable import ScrollableFrame
 from .button_groups import ButtonGroup
 from .labels import StandardLabel, LabelValuePair
 from .icon_buttons import IconButton
+from .time_display import TimeDisplay
 
 __all__ = [
     "ToolTip",
@@ -23,4 +24,5 @@ __all__ = [
     "StandardLabel",
     "LabelValuePair",
     "IconButton",
+    "TimeDisplay",
 ]

@@ -912,6 +912,7 @@ class TestDeviceManagerRealDeviceIntegration:
         device_manager.close_all_connections()
     
     @pytest.mark.integration
+    @pytest.mark.timeout(20)
     def test_device_manager_to_virtual_database_creates_thousands_of_rows(self, ic256_ip):
         """Integration test: Verify full pipeline DeviceManager -> IODatabase -> VirtualDatabase.
         

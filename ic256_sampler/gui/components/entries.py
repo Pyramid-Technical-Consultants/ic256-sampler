@@ -5,7 +5,7 @@ from typing import Optional
 
 from ..styles.colors import COLORS
 from ..styles.fonts import FONTS
-from ..styles.sizes import ENTRY_PADY
+from ..styles.sizes import ENTRY_PADY, STANDARD_WIDGET_HEIGHT
 
 
 class StandardEntry:
@@ -27,13 +27,17 @@ class StandardEntry:
             **kwargs: Additional entry options
             
         Returns:
-            Configured entry widget with native styling
+            Configured entry widget with native styling wrapped in a frame for consistent height
         """
         if font is None:
             font = FONTS["entry"]
         
+        # Create a frame wrapper to control entry height
+        entry_frame = tk.Frame(parent, bg=COLORS["background"], height=STANDARD_WIDGET_HEIGHT)
+        entry_frame.pack_propagate(False)  # Prevent frame from shrinking to fit content
+        
         entry = tk.Entry(
-            parent,
+            entry_frame,
             width=width,
             font=font,
             relief="sunken",  # Native entry field appearance
@@ -43,9 +47,14 @@ class StandardEntry:
             **kwargs
         )
         
-        # Store padding info for consistent height
-        entry._entry_pady = ENTRY_PADY
+        # Pack entry in frame with padding to center vertically
+        entry.pack(fill="both", expand=True, padx=2, pady=2)
         
+        # Store padding info and frame reference on entry
+        entry._entry_pady = ENTRY_PADY
+        entry._entry_frame = entry_frame
+        
+        # Return the entry (frame is accessible via _entry_frame for grid placement)
         return entry
 
 
@@ -71,6 +80,8 @@ class EntryWithPlaceholder:
         """
         self.placeholder = placeholder
         self.entry = StandardEntry.create(parent, width=width, font=font, **kwargs)
+        # Store frame reference for grid placement
+        self.entry_frame = self.entry._entry_frame
         
         # Set up placeholder
         self.entry.insert(0, placeholder)

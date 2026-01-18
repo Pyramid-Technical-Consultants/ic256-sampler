@@ -183,6 +183,8 @@ class TestStatisticsUpdaterUpdateLoop:
         }
         callback = Mock()
         updater = StatisticsUpdater(device_stats, callback, 0.01)
+        updater._stopping = True  # Set stopping so loop continues even when stop_event is set
+        updater._collector_thread_alive = False  # Thread is dead so it can exit after stabilization
         
         stop_event = threading.Event()
         stop_event.set()  # Stop immediately

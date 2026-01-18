@@ -62,10 +62,12 @@ class FormField:
         )
         self.label.grid(row=row, column=column, padx=(5, 10), pady=ENTRY_PADY, sticky="w")
         
-        # Entry
+        # Entry (wrapped in frame for consistent height)
         self.entry = StandardEntry.create(parent, width=entry_width, **filtered_kwargs)
         self.entry.config(state=entry_state)
-        self.entry.grid(row=row, column=column + 1, padx=(0, 5), pady=ENTRY_PADY, sticky="ew")
+        # Place the frame wrapper instead of entry directly
+        entry_frame = self.entry._entry_frame
+        entry_frame.grid(row=row, column=column + 1, padx=(0, 5), pady=ENTRY_PADY, sticky="ew")
         
         # Configure parent column for entry expansion
         parent.grid_columnconfigure(column + 1, weight=1)
@@ -144,10 +146,12 @@ class FormFieldWithButton:
         )
         self.label.grid(row=row, column=column, padx=(5, 10), pady=ENTRY_PADY, sticky="w")
         
-        # Entry
+        # Entry (wrapped in frame for consistent height)
         self.entry = StandardEntry.create(parent, width=entry_width, **entry_kwargs)
         self.entry.config(state=entry_state)
-        self.entry.grid(row=row, column=column + 1, padx=(0, 5), pady=ENTRY_PADY, sticky="ew")
+        # Place the frame wrapper instead of entry directly
+        entry_frame = self.entry._entry_frame
+        entry_frame.grid(row=row, column=column + 1, padx=(0, 5), pady=ENTRY_PADY, sticky="ew")
         
         # Configure parent column for entry expansion
         parent.grid_columnconfigure(column + 1, weight=1)

@@ -103,42 +103,38 @@ class StatisticsUpdater:
         previous_total_size = 0
         
         while True:
-            should_continue = (
-                not stop_event.is_set() or
-                (self._stopping and self._collector_thread_alive)
-            )
+            # Check if we should continue
+            if stop_event.is_set() and not self._stopping:
+                break  # Stop immediately if not in stopping mode
             
-            if self.device_statistics:
-                aggregated = aggregate_statistics(self.device_statistics)
-                total_rows = aggregated["total_rows"]
-                total_size = aggregated["total_size"]
-                
-                # Check if statistics have changed
-                if self._stopping:
-                    if (total_rows == previous_total_rows and 
-                        total_size == previous_total_size):
-                        consecutive_no_change += 1
-                    else:
-                        consecutive_no_change = 0
-                        previous_total_rows = total_rows
-                        previous_total_size = total_size
-                    
-                    # If collector thread finished and statistics haven't changed for 15 updates (1.5 seconds), we're done
-                    if (not self._collector_thread_alive and 
-                        consecutive_no_change >= 15):
-                        # Final update before stopping
-                        self.update_callback(total_rows, aggregated["formatted_size"])
-                        break
+            if not self.device_statistics:
+                time.sleep(self.update_interval)
+                continue
+            
+            aggregated = aggregate_statistics(self.device_statistics)
+            total_rows = aggregated["total_rows"]
+            total_size = aggregated["total_size"]
+            
+            # Update GUI
+            self.update_callback(total_rows, aggregated["formatted_size"])
+            
+            # Check for stabilization when stopping
+            if self._stopping:
+                if (total_rows == previous_total_rows and 
+                    total_size == previous_total_size):
+                    consecutive_no_change += 1
                 else:
-                    # Not in stopping mode, update previous values
+                    consecutive_no_change = 0
                     previous_total_rows = total_rows
                     previous_total_size = total_size
                 
-                # Update GUI
-                self.update_callback(total_rows, aggregated["formatted_size"])
-            
-            if not should_continue:
-                # Not in stopping mode and stop_event is set, exit
-                break
+                # Exit if collector finished and stats stabilized
+                if (not self._collector_thread_alive and 
+                    consecutive_no_change >= 15):
+                    break
+            else:
+                # Update previous values for change detection
+                previous_total_rows = total_rows
+                previous_total_size = total_size
             
             time.sleep(self.update_interval)

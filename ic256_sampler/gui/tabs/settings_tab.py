@@ -5,16 +5,17 @@ from typing import Callable
 from tkinter import filedialog
 
 from ..styles import COLORS, FONTS
-from ..styles.sizes import BUTTON_PADY
+from ..styles.sizes import BUTTON_PADY, TAB_CONTENT_PADX
 from ..components import (
     StandardButton,
     StandardSection,
+    ScrollableFrame,
     FormField,
     FormFieldWithButton,
-    ScrollableFrame,
     IconButton,
     ToolTip,
 )
+from ..utils import create_scrollable_tab_content, open_directory
 from ...config import update_file_json, init_ip
 from ...utils import is_valid_device
 
@@ -53,9 +54,14 @@ class SettingsTab:
         
         # Create scrollable frame
         scrollable = ScrollableFrame(self.parent)
-        main_container = scrollable.get_frame()
-        main_container.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
+        scrollable_frame = scrollable.get_frame()
+        
+        # Create padded container for consistent spacing
+        main_container = tk.Frame(scrollable_frame, bg=COLORS["background"])
+        main_container.grid(row=0, column=0, padx=(TAB_CONTENT_PADX, TAB_CONTENT_PADX), sticky="nsew")
+        # Configure grid for sections - column 0 should expand
         main_container.grid_columnconfigure(0, weight=1)
+        scrollable_frame.grid_columnconfigure(0, weight=1)
         
         # Device configuration section
         self._create_device_section(main_container)
@@ -251,20 +257,8 @@ class SettingsTab:
     
     def _open_directory(self):
         """Open the directory in the system's default file manager."""
-        import os
-        import sys
         path = self.path_entry.get()
-        if path and os.path.isdir(path):
-            try:
-                if sys.platform == "win32":
-                    os.startfile(path)
-                elif sys.platform == "darwin":  # macOS
-                    os.system(f'open "{path}"')
-                else:  # Linux and other Unix-like systems
-                    os.system(f'xdg-open "{path}"')
-            except Exception as e:
-                # Error handling would be done by GUI's show_message
-                pass
+        open_directory(path)
     
     def _store_initial_values(self):
         """Store initial values for change detection."""

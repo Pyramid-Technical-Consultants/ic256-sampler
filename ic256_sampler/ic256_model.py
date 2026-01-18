@@ -4,7 +4,7 @@ This module encapsulates all IC256-specific conversion logic, magic numbers,
 device-specific behavior, and device setup. This keeps VirtualDatabase generic and device-agnostic.
 """
 
-from typing import Callable, Any, Dict
+from typing import Callable, Any, Dict, Optional
 from .virtual_database import Converter, ColumnDefinition, ChannelPolicy
 from .igx_client import IGXWebsocketClient
 from .device_paths import IC256_45_PATHS
@@ -17,6 +17,23 @@ Y_STRIP_OFFSET = 1.38  # mm per count for Y axis
 ERROR_GAUSS = -10000  # Error value for gaussian fields
 
 
+def _to_float(value: Any) -> Optional[float]:
+    """Convert value to float, returning None if invalid.
+    
+    Args:
+        value: Value to convert
+        
+    Returns:
+        Float value or None if conversion fails
+    """
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
+
+
 def convert_mean_ic256(value: Any, x_axis: bool = True) -> float:
     """Convert IC256 mean value from device units to millimeters.
     
@@ -27,12 +44,8 @@ def convert_mean_ic256(value: Any, x_axis: bool = True) -> float:
     Returns:
         Converted value in millimeters
     """
-    if value is None or value == "":
-        return ERROR_GAUSS
-    
-    try:
-        numeric_value = float(value)
-    except (ValueError, TypeError):
+    numeric_value = _to_float(value)
+    if numeric_value is None:
         return ERROR_GAUSS
     
     offset = X_STRIP_OFFSET if x_axis else Y_STRIP_OFFSET
@@ -49,12 +62,8 @@ def convert_sigma_ic256(value: Any, x_axis: bool = True) -> float:
     Returns:
         Converted value in millimeters
     """
-    if value is None or value == "":
-        return ERROR_GAUSS
-    
-    try:
-        numeric_value = float(value)
-    except (ValueError, TypeError):
+    numeric_value = _to_float(value)
+    if numeric_value is None:
         return ERROR_GAUSS
     
     offset = X_STRIP_OFFSET if x_axis else Y_STRIP_OFFSET

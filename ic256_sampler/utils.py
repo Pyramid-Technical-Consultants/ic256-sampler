@@ -40,19 +40,22 @@ def is_valid_device(ip: str, device_name: str) -> bool:
     """
     if not is_valid_ipv4(ip):
         return False
+    
     try:
         url = f"http://{ip}{ADMIN_PATHS['device_type']}"
-        get_device_name = ""
-        response = requests.get(url, timeout=2)  # Timeout set to 2 seconds
-        if response.status_code == 200:
-            get_device_name = response.text.replace('"', "").upper()
+        response = requests.get(url, timeout=2)
+        
+        if response.status_code != 200:
+            return False
+        
+        actual_device_name = response.text.replace('"', "").upper()
+        expected_name = device_name.upper()
         
         # For IC256 devices, check if device name starts with "IC256"
-        if device_name.upper().startswith("IC256"):
-            return get_device_name.startswith("IC256")
-        else:
-            # For other devices (like TX2), check for exact match
-            return device_name.upper() in get_device_name
-    except (requests.exceptions.RequestException, requests.exceptions.Timeout, 
-            requests.exceptions.ConnectionError, ValueError, AttributeError):
+        if expected_name.startswith("IC256"):
+            return actual_device_name.startswith("IC256")
+        # For other devices (like TX2), check for exact match
+        return expected_name in actual_device_name
+        
+    except (requests.exceptions.RequestException, ValueError, AttributeError):
         return False

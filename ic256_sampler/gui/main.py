@@ -174,15 +174,15 @@ class GUI:
         self.tab.bind("<<NotebookTabChanged>>", self._on_tab_click)
         
         # Create tabs
+        from .utils import setup_tab_frame
+        
         main_tab_frame = ttk.Frame(self.tab)
-        main_tab_frame.grid_rowconfigure(0, weight=1)
-        main_tab_frame.grid_columnconfigure(0, weight=1)
+        setup_tab_frame(main_tab_frame)
         self.tab.add(main_tab_frame, text="Main")
         self.main_tab = MainTab(main_tab_frame, self.start, self.stop, self.image_loader)
         
         settings_tab_frame = ttk.Frame(self.tab)
-        settings_tab_frame.grid_rowconfigure(0, weight=1)
-        settings_tab_frame.grid_columnconfigure(0, weight=1)
+        setup_tab_frame(settings_tab_frame)
         self.tab.add(settings_tab_frame, text="Settings")
         settings_tab_index = self.tab.index(settings_tab_frame)
         self.setting_tab = SettingsTab(
@@ -194,8 +194,7 @@ class GUI:
         )
         
         log_tab_frame = ttk.Frame(self.tab)
-        log_tab_frame.grid_rowconfigure(0, weight=1)
-        log_tab_frame.grid_columnconfigure(0, weight=1)
+        setup_tab_frame(log_tab_frame)
         self.tab.add(log_tab_frame, text="Log")
         self.log_tab = LogTab(log_tab_frame, self.show_message)
         
