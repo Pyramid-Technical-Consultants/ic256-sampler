@@ -1,7 +1,5 @@
-"""Main application entry point for IC256 data collection.
+"""Main application entry point for IC256 data collection."""
 
-This module handles single instance enforcement and application startup.
-"""
 import os
 import sys
 import portalocker
@@ -9,10 +7,8 @@ import atexit
 import tempfile
 from .application import Application
 
-# Application constants
 LOCK_FILE_NAME: str = "my_app.lock"
 
-# Initialize lock file for single instance enforcement
 lock_file_path = os.path.join(tempfile.gettempdir(), LOCK_FILE_NAME)
 lock_file = open(lock_file_path, "w")
 
@@ -24,12 +20,11 @@ def cleanup_lock_file() -> None:
             portalocker.unlock(lock_file)
             lock_file.close()
     except Exception:
-        pass  # Ignore errors during cleanup
+        pass
 
 
 atexit.register(cleanup_lock_file)
 
-# Enforce single instance
 try:
     portalocker.lock(lock_file, portalocker.LOCK_EX | portalocker.LOCK_NB)
 except portalocker.LockException:
@@ -47,12 +42,10 @@ def main() -> None:
     try:
         app.run()
     except KeyboardInterrupt:
-        # Handle keyboard interrupt at the top level
         print("\nShutting down gracefully...")
         app.cleanup()
         sys.exit(0)
     except Exception as e:
-        # Handle any other unexpected errors
         print(f"Unexpected error: {e}")
         import traceback
         traceback.print_exc()

@@ -1,23 +1,9 @@
-"""
-Device IO Path Configuration
+"""Device IO Path Configuration"""
 
-This module contains all device IO paths used throughout the application.
-Update these paths when the device API changes.
-
-All paths are relative to the device root and should be used with the device client's field() method
-or constructed into full HTTP URLs as needed.
-
-To change device names (e.g., from "ic256" to "ic256_42"), update the constants below.
-Note: The API changed from "ic256_45" to "ic256" - all API paths now use "ic256".
-"""
-
-# Device Name Constants - Update these if device names change in the API
 IC256_45_DEVICE_NAME = "ic256"
 TX2_DEVICE_NAME = "tx2"
 
-# IC256-45 Device Paths (built dynamically using IC256_45_DEVICE_NAME)
 IC256_45_PATHS = {
-    # ADC Channels - Gaussian Fit
     "adc": {
         "primary_dose": f"/{IC256_45_DEVICE_NAME}/dose_adc/channel/value",
         "channel_sum": f"/{IC256_45_DEVICE_NAME}/adc/channel_sum/value",
@@ -29,31 +15,25 @@ IC256_45_PATHS = {
         "gate_signal": f"/{IC256_45_DEVICE_NAME}/gate_signal/value",
         "sample_frequency": f"/{IC256_45_DEVICE_NAME}/adc/sample_frequency/value",
     },
-    # Single Dose Module ADC
     "single_dose_module": {
         "sample_frequency": f"/{IC256_45_DEVICE_NAME}/dose_adc/sample_frequency/value",
         "user_units": f"/{IC256_45_DEVICE_NAME}/dose_adc/user_units/value",
     },
-    # High Voltage
     "high_voltage": {
         "monitor_voltage_internal": f"/{IC256_45_DEVICE_NAME}/high_voltage/monitor_voltage_internal/value",
     },
-    # Environmental Sensor (I2C2)
     "environmental_sensor": {
         "temperature": f"/{IC256_45_DEVICE_NAME}/i2c2/environmental_sensor/temperature/value",
         "humidity": f"/{IC256_45_DEVICE_NAME}/i2c2/environmental_sensor/humidity/value",
         "pressure": f"/{IC256_45_DEVICE_NAME}/i2c2/environmental_sensor/pressure/value",
         "state": f"/{IC256_45_DEVICE_NAME}/i2c2/environmental_sensor/state/value",
     },
-    # HTTP IO Endpoints (used with /io/ prefix)
     "io": {
         "fan_control": f"/io/{IC256_45_DEVICE_NAME}/fan_control/control_mode/value.json",
     },
 }
 
-# TX2 Device Paths (built dynamically using TX2_DEVICE_NAME)
 TX2_PATHS = {
-    # ADC Channels
     "adc": {
         "channel_5": f"/{TX2_DEVICE_NAME}/adc/channel_5/value",
         "channel_1": f"/{TX2_DEVICE_NAME}/adc/channel_1/value",
@@ -64,31 +44,18 @@ TX2_PATHS = {
     },
 }
 
-# Common/Admin Paths
 ADMIN_PATHS = {
     "device_type": "/io/admin/device_type/value.json",
 }
 
-# Helper functions to get paths
+
 def _get_path(paths_dict: dict, category: str = None, key: str = None) -> str:
-    """Generic helper to get a path from a paths dictionary.
-    
-    Args:
-        paths_dict: Dictionary containing paths (either nested or flat)
-        category: Optional category name for nested dictionaries
-        key: Key to look up
-        
-    Returns:
-        Path string
-        
-    Raises:
-        KeyError: If category or key doesn't exist
-    """
+    """Generic helper to get a path from a paths dictionary."""
     if category:
         if category not in paths_dict:
             raise KeyError(f"Invalid category '{category}'. Available: {list(paths_dict.keys())}")
         paths_dict = paths_dict[category]
-    
+
     if key not in paths_dict:
         available = list(paths_dict.keys())
         error_msg = f"Invalid key '{key}'" + (f" in category '{category}'" if category else "")
@@ -112,18 +79,7 @@ def get_admin_path(key: str) -> str:
 
 
 def build_http_url(ip_address: str, io_path: str) -> str:
-    """Build a full HTTP URL from an IP address and IO path.
-    
-    Args:
-        ip_address: IP address (IPv4)
-        io_path: IO path (should start with /)
-        
-    Returns:
-        Full HTTP URL string
-        
-    Raises:
-        ValueError: If ip_address is empty or io_path doesn't start with /
-    """
+    """Build a full HTTP URL from an IP address and IO path."""
     if not ip_address:
         raise ValueError("IP address cannot be empty")
     if not io_path.startswith("/"):
