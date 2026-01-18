@@ -57,6 +57,144 @@ class VirtualRow:
     data: Dict[str, Any]
 
 
+class ColumnValueResolver:
+    """Resolves column values based on channel policy.
+    
+    This class handles the logic for extracting values from channel data
+    based on different policies: SYNCHRONIZED, INTERPOLATED, and ASYNCHRONOUS.
+    """
+    
+    @staticmethod
+    def resolve(
+        col_policy: ChannelPolicy,
+        snapshot: List[DataPoint],
+        elapsed_times: List[float],
+        timestamps: Optional[List[int]],
+        current_time: float,
+        ref_timestamp_ns: Optional[int],
+        row_interval: float,
+        interp_tolerance: float,
+    ) -> Optional[Any]:
+        """Get value for a column based on its policy.
+        
+        Args:
+            col_policy: Policy for the column
+            snapshot: List of data points for the channel
+            elapsed_times: Pre-computed elapsed times
+            timestamps: Pre-computed timestamps (for SYNCHRONIZED)
+            current_time: Current row time
+            ref_timestamp_ns: Reference timestamp in nanoseconds (for SYNCHRONIZED)
+            row_interval: Row interval in seconds
+            interp_tolerance: Tolerance for interpolation
+            
+        Returns:
+            Raw value or None if not found
+        """
+        if not snapshot or not elapsed_times:
+            return None
+        
+        if col_policy == ChannelPolicy.SYNCHRONIZED:
+            return ColumnValueResolver._resolve_synchronized(
+                snapshot, timestamps, ref_timestamp_ns
+            )
+        elif col_policy == ChannelPolicy.INTERPOLATED:
+            return ColumnValueResolver._resolve_interpolated(
+                snapshot, elapsed_times, current_time, row_interval, interp_tolerance
+            )
+        elif col_policy == ChannelPolicy.ASYNCHRONOUS:
+            return ColumnValueResolver._resolve_asynchronous(
+                snapshot, elapsed_times, current_time, interp_tolerance
+            )
+        
+        return None
+    
+    @staticmethod
+    def _resolve_synchronized(
+        snapshot: List[DataPoint],
+        timestamps: Optional[List[int]],
+        ref_timestamp_ns: Optional[int],
+    ) -> Optional[Any]:
+        """Resolve value using SYNCHRONIZED policy (exact timestamp match)."""
+        if ref_timestamp_ns is not None and timestamps:
+            ts_idx = bisect.bisect_left(timestamps, ref_timestamp_ns)
+            for i in [ts_idx, ts_idx - 1, ts_idx + 1]:
+                if 0 <= i < len(snapshot):
+                    if abs(timestamps[i] - ref_timestamp_ns) <= 1000:
+                        return snapshot[i].value
+        return None
+    
+    @staticmethod
+    def _resolve_interpolated(
+        snapshot: List[DataPoint],
+        elapsed_times: List[float],
+        current_time: float,
+        row_interval: float,
+        interp_tolerance: float,
+    ) -> Optional[Any]:
+        """Resolve value using INTERPOLATED policy (interpolate between points)."""
+        idx = bisect.bisect_left(elapsed_times, current_time)
+        before_idx = idx - 1
+        after_idx = idx
+        
+        has_before = before_idx >= 0
+        has_after = after_idx < len(snapshot)
+        before_valid = has_before and abs(elapsed_times[before_idx] - current_time) <= interp_tolerance
+        after_valid = has_after and abs(elapsed_times[after_idx] - current_time) <= interp_tolerance
+        
+        if has_before and has_after:
+            before_point = snapshot[before_idx]
+            after_point = snapshot[after_idx]
+            t1, v1 = before_point.elapsed_time, before_point.value
+            t2, v2 = after_point.elapsed_time, after_point.value
+            
+            lenient_tolerance = row_interval * 5.0
+            if abs(t1 - current_time) <= lenient_tolerance and abs(t2 - current_time) <= lenient_tolerance:
+                if abs(t2 - t1) >= 1e-9:
+                    try:
+                        if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
+                            return v1 + (v2 - v1) * (current_time - t1) / (t2 - t1)
+                        else:
+                            return v1 if abs(current_time - t1) < abs(current_time - t2) else v2
+                    except (TypeError, ValueError):
+                        return v1
+                else:
+                    return v1
+            elif before_valid:
+                return snapshot[before_idx].value
+            elif after_valid:
+                return snapshot[after_idx].value
+        elif before_valid:
+            return snapshot[before_idx].value
+        elif after_valid:
+            return snapshot[after_idx].value
+        return None
+    
+    @staticmethod
+    def _resolve_asynchronous(
+        snapshot: List[DataPoint],
+        elapsed_times: List[float],
+        current_time: float,
+        interp_tolerance: float,
+    ) -> Optional[Any]:
+        """Resolve value using ASYNCHRONOUS policy (nearest point, no interpolation)."""
+        idx = bisect.bisect_left(elapsed_times, current_time)
+        closest = None
+        min_diff = float('inf')
+        
+        if idx < len(snapshot):
+            diff = abs(elapsed_times[idx] - current_time)
+            if diff < min_diff and diff <= interp_tolerance:
+                min_diff = diff
+                closest = snapshot[idx].value
+        
+        if idx > 0:
+            diff = abs(elapsed_times[idx - 1] - current_time)
+            if diff < min_diff and diff <= interp_tolerance:
+                closest = snapshot[idx - 1].value
+        
+        return closest
+
+
 class VirtualDatabase:
     """Virtual database that creates synthetic rows from IO database.
     
@@ -134,6 +272,55 @@ class VirtualDatabase:
             except Exception:
                 pass  # Don't fail if logging callback has issues
     
+    
+    def _process_columns_for_row(
+        self,
+        column_data: List[Tuple],
+        column_names: List[str],
+        current_time: float,
+        ref_timestamp_ns: Optional[int],
+        row_interval: float,
+        interp_tolerance: float,
+        last_known_values: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Process all columns for a single row.
+        
+        Args:
+            column_data: Pre-computed column data tuples
+            column_names: List of column names
+            current_time: Current row time
+            ref_timestamp_ns: Reference timestamp in nanoseconds
+            row_interval: Row interval in seconds
+            interp_tolerance: Tolerance for interpolation
+            last_known_values: Dictionary of last known values for forward-fill
+            
+        Returns:
+            Dictionary mapping column names to values
+        """
+        row_data = dict.fromkeys(column_names, None)
+        
+        for col_name, col_policy, converter, snapshot, elapsed_times, timestamps in column_data:
+            if snapshot is None:
+                continue
+            
+            raw_value = ColumnValueResolver.resolve(
+                col_policy, snapshot, elapsed_times, timestamps,
+                current_time, ref_timestamp_ns, row_interval, interp_tolerance
+            )
+            
+            if raw_value is not None:
+                try:
+                    converted_value = converter(raw_value)
+                    row_data[col_name] = converted_value
+                    if col_policy in (ChannelPolicy.INTERPOLATED, ChannelPolicy.ASYNCHRONOUS):
+                        last_known_values[col_name] = converted_value
+                except Exception:
+                    pass
+            elif col_policy in (ChannelPolicy.INTERPOLATED, ChannelPolicy.ASYNCHRONOUS) and col_name in last_known_values:
+                row_data[col_name] = last_known_values[col_name]
+        
+        return row_data
+    
     def _find_reference_timestamp(
         self,
         ref_snapshot: List[DataPoint],
@@ -182,6 +369,173 @@ class VirtualDatabase:
         # No match found, advance search index to avoid rechecking
         return None, max(0, idx - 1)
     
+    def _validate_and_correct_time_range(
+        self,
+        ref_channel: ChannelData,
+        first_elapsed: float,
+        last_elapsed: float,
+    ) -> Tuple[float, float, float]:
+        """Validate and correct time range, handling corrupted elapsed_time values.
+        
+        Args:
+            ref_channel: Reference channel data
+            first_elapsed: First elapsed time
+            last_elapsed: Last elapsed time
+            
+        Returns:
+            Tuple of (corrected_first_elapsed, corrected_last_elapsed, time_span)
+        """
+        time_span = last_elapsed - first_elapsed
+        
+        # Check for corrupted elapsed_time values (> 1e9 seconds looks like absolute timestamp)
+        if time_span > 86400 or abs(first_elapsed) > 1e9:
+            self._log(
+                f"Suspicious elapsed_time values detected: first={first_elapsed:.3f}s, "
+                f"last={last_elapsed:.3f}s, span={time_span:.1f}s. "
+                f"Recalculating from timestamps...",
+                "WARNING"
+            )
+            first_ts = ref_channel.data_points[0].timestamp_ns
+            last_ts = ref_channel.data_points[-1].timestamp_ns
+            time_span_from_ts = (last_ts - first_ts) / 1e9
+            
+            if time_span_from_ts > 86400:
+                self._log(
+                    f"Even timestamp-based span is huge: {time_span_from_ts:.1f}s. "
+                    f"Timestamps may be corrupted: first={first_ts}, last={last_ts}",
+                    "ERROR"
+                )
+                raise ValueError("Corrupted timestamps")
+            
+            first_elapsed = 0.0
+            last_elapsed = time_span_from_ts
+            time_span = time_span_from_ts
+            
+            self._log(
+                f"Recalculated time span: {time_span:.3f}s (from timestamps)",
+                "INFO"
+            )
+        
+        if time_span > 86400:
+            self._log(
+                f"Very large time span: {time_span:.1f}s ({time_span/3600:.1f} hours) - "
+                f"this may cause performance issues",
+                "WARNING"
+            )
+        
+        return first_elapsed, last_elapsed, time_span
+    
+    def _create_limited_snapshot(
+        self,
+        data_points: Any,
+        count: int,
+        max_size: int,
+        warning_key: str,
+        channel_name: str,
+    ) -> List[DataPoint]:
+        """Create a snapshot with size limit and warning logic.
+        
+        Args:
+            data_points: Data points to snapshot
+            count: Total count of data points
+            max_size: Maximum snapshot size
+            warning_key: Key for warning count tracking
+            channel_name: Name for logging
+            
+        Returns:
+            List of data points (limited if needed)
+        """
+        if count > max_size:
+            snapshot = list(data_points)[-max_size:]
+            warning_count = self._snapshot_warning_counts.get(warning_key, 0)
+            if warning_count == 0 or warning_count % 50 == 0:
+                self._log(
+                    f"{channel_name} has {count} points, "
+                    f"limiting snapshot to {max_size} most recent points",
+                    "WARNING"
+                )
+            self._snapshot_warning_counts[warning_key] = warning_count + 1
+        else:
+            snapshot = list(data_points)
+            if warning_key in self._snapshot_warning_counts:
+                del self._snapshot_warning_counts[warning_key]
+        
+        return snapshot
+    
+    def _prepare_column_data(
+        self,
+        channel_snapshots: Dict[str, List[DataPoint]],
+        channel_elapsed_times: Dict[str, List[float]],
+        channel_timestamps: Dict[str, List[int]],
+    ) -> Tuple[List[Tuple], List[str]]:
+        """Prepare column data for row processing.
+        
+        Args:
+            channel_snapshots: Dictionary of channel snapshots
+            channel_elapsed_times: Dictionary of elapsed times
+            channel_timestamps: Dictionary of timestamps
+            
+        Returns:
+            Tuple of (column_data, column_names)
+        """
+        column_data = []
+        column_names = []
+        
+        for col_def in self.columns:
+            col_name = col_def.name
+            col_policy = col_def.policy
+            converter = col_def.converter
+            column_names.append(col_name)
+            
+            if col_def.channel_path is None:
+                column_data.append((col_name, col_policy, converter, None, None, None))
+            else:
+                snapshot = channel_snapshots.get(col_def.channel_path)
+                elapsed_times = channel_elapsed_times.get(col_def.channel_path) if snapshot else None
+                timestamps = channel_timestamps.get(col_def.channel_path) if col_policy == ChannelPolicy.SYNCHRONIZED else None
+                column_data.append((col_name, col_policy, converter, snapshot, elapsed_times, timestamps))
+        
+        return column_data, column_names
+    
+    def _handle_build_failure(
+        self,
+        reason: str,
+        total_io_points: int,
+        log_interval: int = 10,
+    ) -> None:
+        """Handle build failure with logging and tracking.
+        
+        Args:
+            reason: Failure reason
+            total_io_points: Total IO points count
+            log_interval: Log every Nth failure
+        """
+        self._last_build_failure_reason = reason
+        self._consecutive_build_failures += 1
+        
+        if self._consecutive_build_failures == 1 or self._consecutive_build_failures % log_interval == 0:
+            diag = self._get_diagnostic_info()
+            level = "ERROR" if self._consecutive_build_failures >= log_interval else "WARNING"
+            
+            if log_interval == 10:  # build() uses more detailed logging
+                available_channels = list(diag['column_channels'].keys())[:5]
+                channels_str = ', '.join(available_channels)
+                if len(diag['column_channels']) > 5:
+                    channels_str += "..."
+                self._log(
+                    f"Virtual database cannot build rows: {reason}. "
+                    f"IO database has {total_io_points} total points across {diag['total_io_channels']} channels. "
+                    f"Available channels: {channels_str}",
+                    level
+                )
+            else:  # rebuild() uses simpler logging
+                self._log(
+                    f"Virtual database cannot rebuild rows: {reason}. "
+                    f"IO database has {total_io_points} total points. "
+                    f"Virtual database has {len(self.rows)} existing rows.",
+                    level
+                )
+    
     def _create_channel_snapshots(
         self,
         max_snapshot_size: int = 100000,
@@ -205,22 +559,10 @@ class VirtualDatabase:
                 channel_data = self.io_database.get_channel(col_def.channel_path)
                 if channel_data and channel_data.count > 0:
                     # Create snapshot with size limit
-                    if channel_data.count > max_snapshot_size:
-                        snapshot = list(channel_data.data_points)[-max_snapshot_size:]
-                        # Only warn periodically to reduce log spam (every 50 rebuilds or first time)
-                        warning_count = self._snapshot_warning_counts.get(col_def.channel_path, 0)
-                        if warning_count == 0 or warning_count % 50 == 0:
-                            self._log(
-                                f"Channel {col_def.channel_path} has {channel_data.count} points, "
-                                f"limiting snapshot to {max_snapshot_size} most recent points",
-                                "WARNING"
-                            )
-                        self._snapshot_warning_counts[col_def.channel_path] = warning_count + 1
-                    else:
-                        snapshot = list(channel_data.data_points)
-                        # Reset warning count if channel is back to normal size
-                        if col_def.channel_path in self._snapshot_warning_counts:
-                            del self._snapshot_warning_counts[col_def.channel_path]
+                    snapshot = self._create_limited_snapshot(
+                        channel_data.data_points, channel_data.count, max_snapshot_size,
+                        col_def.channel_path, f"Channel {col_def.channel_path}"
+                    )
                     
                     # Filter by time if needed (for incremental rebuild)
                     if snapshot_start_time is not None and channel_data.count > 1000:
@@ -241,24 +583,10 @@ class VirtualDatabase:
         if not ref_channel:
             return channel_snapshots, channel_elapsed_times, channel_timestamps, [], []
         
-        if ref_channel.count > max_snapshot_size:
-            ref_snapshot = list(ref_channel.data_points)[-max_snapshot_size:]
-            # Only warn periodically to reduce log spam (every 50 rebuilds or first time)
-            ref_warning_key = "__REFERENCE_CHANNEL__"
-            warning_count = self._snapshot_warning_counts.get(ref_warning_key, 0)
-            if warning_count == 0 or warning_count % 50 == 0:
-                self._log(
-                    f"Reference channel has {ref_channel.count} points, "
-                    f"limiting snapshot to {max_snapshot_size} most recent points",
-                    "WARNING"
-                )
-            self._snapshot_warning_counts[ref_warning_key] = warning_count + 1
-        else:
-            ref_snapshot = list(ref_channel.data_points)
-            # Reset warning count if reference channel is back to normal size
-            ref_warning_key = "__REFERENCE_CHANNEL__"
-            if ref_warning_key in self._snapshot_warning_counts:
-                del self._snapshot_warning_counts[ref_warning_key]
+        ref_snapshot = self._create_limited_snapshot(
+            ref_channel.data_points, ref_channel.count, max_snapshot_size,
+            "__REFERENCE_CHANNEL__", "Reference channel"
+        )
         
         # Filter reference channel by time if needed
         if snapshot_start_time is not None and ref_channel.count > 1000:
@@ -362,36 +690,17 @@ class VirtualDatabase:
         # Check if we have data but can't build - this is the problematic case
         if total_io_points > 0:
             if not ref_channel:
-                reason = f"Reference channel '{self.reference_channel}' does not exist in IO database"
-                self._last_build_failure_reason = reason
-                self._consecutive_build_failures += 1
-                if self._consecutive_build_failures == 1 or self._consecutive_build_failures % 10 == 0:
-                    # Log every 10th failure to avoid spam, but always log the first
-                    diag = self._get_diagnostic_info()
-                    available_channels = list(diag['column_channels'].keys())[:5]
-                    channels_str = ', '.join(available_channels)
-                    if len(diag['column_channels']) > 5:
-                        channels_str += "..."
-                    self._log(
-                        f"Virtual database cannot build rows: {reason}. "
-                        f"IO database has {total_io_points} total points across {diag['total_io_channels']} channels. "
-                        f"Available channels: {channels_str}",
-                        "ERROR" if self._consecutive_build_failures >= 10 else "WARNING"
-                    )
+                self._handle_build_failure(
+                    f"Reference channel '{self.reference_channel}' does not exist in IO database",
+                    total_io_points
+                )
                 return
             
             if ref_channel.count == 0:
-                reason = f"Reference channel '{self.reference_channel}' exists but has no data points"
-                self._last_build_failure_reason = reason
-                self._consecutive_build_failures += 1
-                if self._consecutive_build_failures == 1 or self._consecutive_build_failures % 10 == 0:
-                    diag = self._get_diagnostic_info()
-                    self._log(
-                        f"Virtual database cannot build rows: {reason}. "
-                        f"IO database has {total_io_points} total points, but reference channel is empty. "
-                        f"Check if data is being collected for '{self.reference_channel}'.",
-                        "ERROR" if self._consecutive_build_failures >= 10 else "WARNING"
-                    )
+                self._handle_build_failure(
+                    f"Reference channel '{self.reference_channel}' exists but has no data points",
+                    total_io_points
+                )
                 return
         
         if not ref_channel or ref_channel.count == 0:
@@ -402,19 +711,11 @@ class VirtualDatabase:
         
         # Check if all channels are primed (have at least one data point)
         if not self._is_primed():
-            # This should not happen if ref_channel.count > 0, but check anyway
             if ref_channel.count > 0:
-                reason = f"Reference channel has {ref_channel.count} points but priming check failed"
-                self._last_build_failure_reason = reason
-                self._consecutive_build_failures += 1
-                if self._consecutive_build_failures == 1 or self._consecutive_build_failures % 10 == 0:
-                    diag = self._get_diagnostic_info()
-                    self._log(
-                        f"Virtual database cannot build rows: {reason}. "
-                        f"IO database has {total_io_points} total points. "
-                        f"Reference channel '{self.reference_channel}' has {ref_channel.count} points.",
-                        "ERROR" if self._consecutive_build_failures >= 10 else "WARNING"
-                    )
+                self._handle_build_failure(
+                    f"Reference channel has {ref_channel.count} points but priming check failed",
+                    total_io_points
+                )
             return
         
         # Reset failure tracking on successful build
@@ -432,19 +733,13 @@ class VirtualDatabase:
         
         # Get time range efficiently - deques support indexing for first/last
         if not ref_channel.data_points:
-            # This should not happen if we passed the checks above, but handle it
-            total_io_points = self.io_database.get_total_count()
             if total_io_points > 0:
-                reason = f"Reference channel data_points deque is empty despite count={ref_channel.count}"
-                self._last_build_failure_reason = reason
-                self._consecutive_build_failures += 1
-                if self._consecutive_build_failures == 1 or self._consecutive_build_failures % 10 == 0:
-                    self._log(
-                        f"Virtual database cannot build rows: {reason}. "
-                        f"This may indicate a data structure inconsistency.",
-                        "ERROR" if self._consecutive_build_failures >= 10 else "WARNING"
-                    )
+                self._handle_build_failure(
+                    f"Reference channel data_points deque is empty despite count={ref_channel.count}",
+                    total_io_points
+                )
             return
+        
         first_elapsed = ref_channel.data_points[0].elapsed_time
         last_elapsed = ref_channel.data_points[-1].elapsed_time
         
@@ -456,50 +751,12 @@ class VirtualDatabase:
             )
             return
         
-        time_span = last_elapsed - first_elapsed
-        
-        # CRITICAL: Check for corrupted elapsed_time values
-        # If elapsed_time is way too large (looks like an absolute timestamp in seconds, > 1e9),
-        # it means timestamps are corrupted or elapsed_time was incorrectly calculated
-        # Recalculate elapsed_time based on actual timestamps
-        # Note: first_elapsed should typically be 0.0 or a small positive value
-        # Values > 1e9 seconds (~31 years) are definitely wrong and look like absolute timestamps
-        if time_span > 86400 or abs(first_elapsed) > 1e9:  # More than 24 hours span, or first_elapsed looks like absolute timestamp
-            self._log(
-                f"Suspicious elapsed_time values detected: first={first_elapsed:.3f}s, "
-                f"last={last_elapsed:.3f}s, span={time_span:.1f}s. "
-                f"Recalculating from timestamps...",
-                "WARNING"
+        try:
+            first_elapsed, last_elapsed, time_span = self._validate_and_correct_time_range(
+                ref_channel, first_elapsed, last_elapsed
             )
-            # Recalculate elapsed_time from actual timestamps using the first timestamp as reference
-            first_ts = ref_channel.data_points[0].timestamp_ns
-            last_ts = ref_channel.data_points[-1].timestamp_ns
-            time_span_from_ts = (last_ts - first_ts) / 1e9
-            
-            if time_span_from_ts > 86400:
-                self._log(
-                    f"Even timestamp-based span is huge: {time_span_from_ts:.1f}s. "
-                    f"Timestamps may be corrupted: first={first_ts}, last={last_ts}",
-                    "ERROR"
-                )
-                return
-            
-            # Use timestamp-based calculation
-            first_elapsed = 0.0  # Reset to 0 for first point
-            last_elapsed = time_span_from_ts
-            time_span = time_span_from_ts
-            
-            self._log(
-                f"Recalculated time span: {time_span:.3f}s (from timestamps)",
-                "INFO"
-            )
-        
-        if time_span > 86400:  # More than 24 hours (after recalculation check)
-            self._log(
-                f"Very large time span: {time_span:.1f}s ({time_span/3600:.1f} hours) - "
-                f"this may cause performance issues",
-                "WARNING"
-            )
+        except ValueError:
+            return
         
         # Calculate row interval
         # Safety check: ensure sampling_rate is valid before division
@@ -529,61 +786,24 @@ class VirtualDatabase:
             self._create_channel_snapshots(max_snapshot_size)
         
         # Pre-index column data to avoid dictionary lookups in hot loop
-        # Create a list of tuples: (col_name, col_policy, converter, snapshot, elapsed_times, timestamps)
-        # Cache all attributes to reduce attribute access overhead
-        column_data = []
-        column_names = []  # Pre-compute column names for dict.fromkeys()
-        for col_def in self.columns:
-            col_name = col_def.name
-            col_policy = col_def.policy
-            converter = col_def.converter
-            column_names.append(col_name)  # Pre-compute for dict creation
-            if col_def.channel_path is None:
-                column_data.append((col_name, col_policy, converter, None, None, None))
-            else:
-                snapshot = channel_snapshots.get(col_def.channel_path)
-                elapsed_times = channel_elapsed_times.get(col_def.channel_path) if snapshot else None
-                timestamps = channel_timestamps.get(col_def.channel_path) if col_policy == ChannelPolicy.SYNCHRONIZED else None
-                column_data.append((col_name, col_policy, converter, snapshot, elapsed_times, timestamps))
+        column_data, column_names = self._prepare_column_data(
+            channel_snapshots, channel_elapsed_times, channel_timestamps
+        )
+        
+        # Pre-compute tolerance values
+        ref_tolerance = row_interval * 0.5
+        interp_tolerance = row_interval * 2.0
         
         # Handle case where all points have same timestamp (time_span == 0)
         # We should still create at least one row with the available data
         if time_span == 0:
-            # Create a single row at the first_elapsed time
-            # This ensures we have at least one row even when all timestamps are identical
-            # Pre-allocate dictionary with known size
-            row_data = dict.fromkeys(column_names, None)
-            
-            # Get reference timestamp for synchronized channels
             ref_timestamp_ns = ref_snapshot[0].timestamp_ns if ref_snapshot else None
+            last_known_values: Dict[str, Any] = {}
+            row_data = self._process_columns_for_row(
+                column_data, column_names, first_elapsed, ref_timestamp_ns,
+                row_interval, interp_tolerance, last_known_values
+            )
             
-            # Fill in data for each column (same logic as main loop)
-            for col_name, col_policy, converter, snapshot, elapsed_times, timestamps in column_data:
-                if snapshot is None:
-                    # Computed column (e.g., "Timestamp (s)") - handled by CSV writer, skip here
-                    continue
-                
-                raw_value = None
-                
-                if col_policy == ChannelPolicy.SYNCHRONIZED:
-                    # Find exact timestamp match
-                    if ref_timestamp_ns is not None and timestamps:
-                        ts_idx = bisect.bisect_left(timestamps, ref_timestamp_ns)
-                        for i in [ts_idx, ts_idx - 1, ts_idx + 1]:
-                            if 0 <= i < len(snapshot):
-                                if abs(timestamps[i] - ref_timestamp_ns) <= 1000:  # 1 microsecond tolerance
-                                    raw_value = snapshot[i].value
-                                    break
-                elif col_policy == ChannelPolicy.INTERPOLATED or col_policy == ChannelPolicy.ASYNCHRONOUS:
-                    # Use first point's value (no interpolation needed when all points are at same time)
-                    if snapshot:
-                        raw_value = snapshot[0].value
-                
-                # Apply converter if value found
-                if raw_value is not None:
-                    row_data[col_name] = converter(raw_value) if converter else raw_value
-            
-            # Create the single row
             self.rows = [VirtualRow(timestamp=first_elapsed, data=row_data)]
             self._built = True
             self._last_built_time = first_elapsed
@@ -605,10 +825,6 @@ class VirtualDatabase:
         
         # Use incremental search - start from beginning for first row
         ref_search_idx = 0
-        
-        # Pre-compute tolerance values
-        ref_tolerance = row_interval * 0.5
-        interp_tolerance = row_interval * 2.0
         
         # Track last known values for forward-fill (for INTERPOLATED and ASYNCHRONOUS channels)
         last_known_values: Dict[str, Any] = {}
@@ -648,110 +864,11 @@ class VirtualDatabase:
                 ref_snapshot, ref_elapsed_times, current_time, ref_tolerance, ref_search_idx
             )
             
-            # Process columns (fully inlined for speed)
-            # Pre-allocate dictionary with known size to avoid rehashing
-            row_data = dict.fromkeys(column_names, None)
-            
-            # Inline all policy-specific matching to avoid function call overhead
-            for col_name, col_policy, converter, snapshot, elapsed_times, timestamps in column_data:
-                if snapshot is None:
-                    continue
-                
-                raw_value = None
-                
-                # Inline SYNCHRONIZED policy
-                if col_policy == ChannelPolicy.SYNCHRONIZED:
-                    if ref_timestamp_ns is not None and timestamps:
-                        # Always use binary search - it's faster even for small datasets
-                        ts_idx = bisect.bisect_left(timestamps, ref_timestamp_ns)
-                        for i in [ts_idx, ts_idx - 1, ts_idx + 1]:
-                            if 0 <= i < len(snapshot):
-                                if abs(timestamps[i] - ref_timestamp_ns) <= 1000:
-                                    raw_value = snapshot[i].value
-                                    break
-                
-                # Inline INTERPOLATED policy
-                elif col_policy == ChannelPolicy.INTERPOLATED:
-                    if elapsed_times:
-                        # Always use binary search - it's faster even for small datasets
-                        # O(log n) is better than O(n) even for n < 50 when called thousands of times
-                        idx = bisect.bisect_left(elapsed_times, current_time)
-                        before_idx = idx - 1
-                        after_idx = idx
-                        
-                        # Check if we have points on both sides (for interpolation)
-                        has_before = before_idx >= 0
-                        has_after = after_idx < len(snapshot)
-                        
-                        # Use strict tolerance for single-side matching, but allow interpolation
-                        # when we have points on both sides even if slightly outside tolerance
-                        before_valid = has_before and abs(elapsed_times[before_idx] - current_time) <= interp_tolerance
-                        after_valid = has_after and abs(elapsed_times[after_idx] - current_time) <= interp_tolerance
-                        
-                        # If we have points on both sides, allow interpolation even if outside strict tolerance
-                        # This handles cases where points are slightly further apart than the tolerance
-                        if has_before and has_after:
-                            before_point = snapshot[before_idx]
-                            after_point = snapshot[after_idx]
-                            t1, v1 = before_point.elapsed_time, before_point.value
-                            t2, v2 = after_point.elapsed_time, after_point.value
-                            
-                            # Use a more lenient tolerance for interpolation (5x row_interval)
-                            lenient_tolerance = row_interval * 5.0
-                            if abs(t1 - current_time) <= lenient_tolerance and abs(t2 - current_time) <= lenient_tolerance:
-                                if abs(t2 - t1) >= 1e-9:
-                                    try:
-                                        if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
-                                            raw_value = v1 + (v2 - v1) * (current_time - t1) / (t2 - t1)
-                                        else:
-                                            raw_value = v1 if abs(current_time - t1) < abs(current_time - t2) else v2
-                                    except (TypeError, ValueError):
-                                        raw_value = v1
-                                else:
-                                    raw_value = v1
-                            elif before_valid:
-                                raw_value = snapshot[before_idx].value
-                            elif after_valid:
-                                raw_value = snapshot[after_idx].value
-                        elif before_valid:
-                            raw_value = snapshot[before_idx].value
-                        elif after_valid:
-                            raw_value = snapshot[after_idx].value
-                
-                # Inline ASYNCHRONOUS policy
-                elif col_policy == ChannelPolicy.ASYNCHRONOUS:
-                    if elapsed_times:
-                        # Always use binary search - it's faster even for small datasets
-                        idx = bisect.bisect_left(elapsed_times, current_time)
-                        closest = None
-                        min_diff = float('inf')
-                        
-                        if idx < len(snapshot):
-                            diff = abs(elapsed_times[idx] - current_time)
-                            if diff < min_diff and diff <= interp_tolerance:
-                                min_diff = diff
-                                closest = snapshot[idx].value
-                        
-                        if idx > 0:
-                            diff = abs(elapsed_times[idx - 1] - current_time)
-                            if diff < min_diff and diff <= interp_tolerance:
-                                closest = snapshot[idx - 1].value
-                        
-                        raw_value = closest
-                
-                # Apply converter
-                if raw_value is not None:
-                    try:
-                        converted_value = converter(raw_value)
-                        row_data[col_name] = converted_value
-                        # Update last known value for forward-fill (INTERPOLATED and ASYNCHRONOUS)
-                        if col_policy in (ChannelPolicy.INTERPOLATED, ChannelPolicy.ASYNCHRONOUS):
-                            last_known_values[col_name] = converted_value
-                    except Exception:
-                        pass
-                elif col_policy in (ChannelPolicy.INTERPOLATED, ChannelPolicy.ASYNCHRONOUS) and col_name in last_known_values:
-                    # Forward-fill: use last known value if matching failed
-                    row_data[col_name] = last_known_values[col_name]
+            # Process columns for this row
+            row_data = self._process_columns_for_row(
+                column_data, column_names, current_time, ref_timestamp_ns,
+                row_interval, interp_tolerance, last_known_values
+            )
             
             # Create virtual row
             if row_idx < len(self.rows):
@@ -893,32 +1010,19 @@ class VirtualDatabase:
         # Check if we have data but can't rebuild - this is the problematic case
         if total_io_points > 0:
             if not ref_channel:
-                reason = f"Reference channel '{self.reference_channel}' does not exist in IO database (rebuild)"
-                self._last_build_failure_reason = reason
-                self._consecutive_build_failures += 1
-                if self._consecutive_build_failures == 1 or self._consecutive_build_failures % 50 == 0:
-                    # Log less frequently for rebuild failures to avoid spam
-                    diag = self._get_diagnostic_info()
-                    self._log(
-                        f"Virtual database cannot rebuild rows: {reason}. "
-                        f"IO database has {total_io_points} total points. "
-                        f"Virtual database has {len(self.rows)} existing rows.",
-                        "ERROR" if self._consecutive_build_failures >= 50 else "WARNING"
-                    )
+                self._handle_build_failure(
+                    f"Reference channel '{self.reference_channel}' does not exist in IO database (rebuild)",
+                    total_io_points,
+                    log_interval=50
+                )
                 return
             
             if ref_channel.count == 0:
-                reason = f"Reference channel '{self.reference_channel}' exists but has no data points (rebuild)"
-                self._last_build_failure_reason = reason
-                self._consecutive_build_failures += 1
-                if self._consecutive_build_failures == 1 or self._consecutive_build_failures % 50 == 0:
-                    diag = self._get_diagnostic_info()
-                    self._log(
-                        f"Virtual database cannot rebuild rows: {reason}. "
-                        f"IO database has {total_io_points} total points, but reference channel is empty. "
-                        f"Virtual database has {len(self.rows)} existing rows.",
-                        "ERROR" if self._consecutive_build_failures >= 50 else "WARNING"
-                    )
+                self._handle_build_failure(
+                    f"Reference channel '{self.reference_channel}' exists but has no data points (rebuild)",
+                    total_io_points,
+                    log_interval=50
+                )
                 return
         
         if not ref_channel or ref_channel.count == 0:
@@ -932,17 +1036,12 @@ class VirtualDatabase:
         # For incremental rebuild, we only need the last data point to check if there's new data
         # We can avoid creating a full snapshot if we just need to check the last point
         if not ref_channel.data_points:
-            # This should not happen if ref_channel.count > 0, but handle it
             if total_io_points > 0 and ref_channel.count > 0:
-                reason = f"Reference channel data_points deque is empty despite count={ref_channel.count} (rebuild)"
-                self._last_build_failure_reason = reason
-                self._consecutive_build_failures += 1
-                if self._consecutive_build_failures == 1 or self._consecutive_build_failures % 50 == 0:
-                    self._log(
-                        f"Virtual database cannot rebuild rows: {reason}. "
-                        f"This may indicate a data structure inconsistency.",
-                        "ERROR" if self._consecutive_build_failures >= 50 else "WARNING"
-                    )
+                self._handle_build_failure(
+                    f"Reference channel data_points deque is empty despite count={ref_channel.count} (rebuild)",
+                    total_io_points,
+                    log_interval=50
+                )
             return
         
         # Reset failure tracking on successful rebuild
@@ -960,35 +1059,14 @@ class VirtualDatabase:
         last_data_point = ref_channel.data_points[-1]
         last_elapsed = last_data_point.elapsed_time
         
-        # CRITICAL: Check for corrupted elapsed_time values (same as in build())
-        # If elapsed_time is way too large (looks like an absolute timestamp in seconds, > 1e9),
-        # recalculate from timestamps
-        # Values > 1e9 seconds (~31 years) are definitely wrong and look like absolute timestamps
-        if abs(last_elapsed) > 1e9:  # last_elapsed looks like absolute timestamp
-            self._log(
-                f"Suspicious elapsed_time in rebuild: last={last_elapsed:.3f}s. "
-                f"Recalculating from timestamps...",
-                "WARNING"
+        # Validate and correct elapsed_time values
+        first_elapsed = ref_channel.data_points[0].elapsed_time
+        try:
+            _, last_elapsed, _ = self._validate_and_correct_time_range(
+                ref_channel, first_elapsed, last_elapsed
             )
-            # Recalculate elapsed_time from actual timestamps
-            first_ts = ref_channel.data_points[0].timestamp_ns
-            last_ts = last_data_point.timestamp_ns
-            time_span_from_ts = (last_ts - first_ts) / 1e9
-            
-            if time_span_from_ts > 86400:
-                self._log(
-                    f"Even timestamp-based span is huge: {time_span_from_ts:.1f}s. "
-                    f"Timestamps may be corrupted: first={first_ts}, last={last_ts}",
-                    "ERROR"
-                )
-                return
-            
-            # Use timestamp-based calculation
-            last_elapsed = time_span_from_ts
-            self._log(
-                f"Recalculated last_elapsed: {last_elapsed:.3f}s (from timestamps)",
-                "INFO"
-            )
+        except ValueError:
+            return
         
         # If not built yet, do a full build
         if not self._built or self._last_built_time is None:
@@ -996,13 +1074,8 @@ class VirtualDatabase:
             self.build()  # build() will check for priming
             return
         
-        # NOTE: We do NOT check priming again after initial build.
-        # Once the initial build is complete, we continue with incremental rebuilds
-        # even if some channels temporarily have no data. The initial build already
-        # verified that all channels were primed, and incremental rebuilds should
-        # continue building rows from the reference channel data.
-        # The previous priming check here was causing rebuilds to stop if any channel
-        # temporarily had no data, which prevented new rows from being created.
+        # Don't check priming again after initial build - continue with incremental rebuilds
+        # even if some channels temporarily have no data
         
         # Calculate row interval
         row_interval = 1.0 / self.sampling_rate
@@ -1030,10 +1103,7 @@ class VirtualDatabase:
             else:
                 return
         
-        # Pre-compute snapshots for incremental rebuild
-        # OPTIMIZATION: Only create snapshots for data we actually need
-        # For incremental rebuild, we only need data from start_time onwards
-        # This avoids creating expensive full snapshots when deques are large
+        # Pre-compute snapshots for incremental rebuild (only data from start_time onwards)
         max_snapshot_size = 100000
         time_margin = row_interval * 100  # 100 row intervals of margin for interpolation
         snapshot_start_time = max(0.0, start_time - time_margin) if self._last_built_time is not None else None
@@ -1041,37 +1111,19 @@ class VirtualDatabase:
         channel_snapshots, channel_elapsed_times, channel_timestamps, ref_snapshot, ref_elapsed_times = \
             self._create_channel_snapshots(max_snapshot_size, snapshot_start_time)
         
-        # Pre-index column data to avoid dictionary lookups in hot loop
-        # Cache all attributes to reduce attribute access overhead
-        column_data = []
-        column_names = []  # Pre-compute column names for dict.fromkeys()
-        for col_def in self.columns:
-            col_name = col_def.name
-            col_policy = col_def.policy
-            converter = col_def.converter
-            column_names.append(col_name)  # Pre-compute for dict creation
-            if col_def.channel_path is None:
-                column_data.append((col_name, col_policy, converter, None, None, None))
-            else:
-                snapshot = channel_snapshots.get(col_def.channel_path)
-                elapsed_times = channel_elapsed_times.get(col_def.channel_path) if snapshot else None
-                timestamps = channel_timestamps.get(col_def.channel_path) if col_policy == ChannelPolicy.SYNCHRONIZED else None
-                column_data.append((col_name, col_policy, converter, snapshot, elapsed_times, timestamps))
+        # Pre-index column data
+        column_data, column_names = self._prepare_column_data(
+            channel_snapshots, channel_elapsed_times, channel_timestamps
+        )
         
-        # Build only new rows incrementally
-        # Limit rows per rebuild to avoid blocking (process in batches)
-        # At 6 kHz, we might accumulate many rows between rebuilds
-        # Increased limit for faster processing when catching up
-        max_rows_per_rebuild = 10000  # Process up to 10k rows per rebuild call
+        # Build only new rows incrementally (limit to avoid blocking)
+        max_rows_per_rebuild = 10000
         rows_built = 0
         
-        # Use incremental search - start from a reasonable position using binary search
+        # Use incremental search starting from last built time
         ref_search_idx = 0
         if ref_elapsed_times and self._last_built_time is not None:
-            # Use binary search to find starting position
-            ref_search_idx = bisect.bisect_left(ref_elapsed_times, self._last_built_time)
-            # Start a bit before to be safe
-            ref_search_idx = max(0, ref_search_idx - 10)
+            ref_search_idx = max(0, bisect.bisect_left(ref_elapsed_times, self._last_built_time) - 10)
         
         # Pre-compute tolerance values
         ref_tolerance = row_interval * 0.5
@@ -1097,110 +1149,11 @@ class VirtualDatabase:
                 ref_snapshot, ref_elapsed_times, current_time, ref_tolerance, ref_search_idx
             )
             
-            # Process columns (fully inlined for speed)
-            # Pre-allocate dictionary with known size to avoid rehashing
-            row_data = dict.fromkeys(column_names, None)
-            
-            # Inline all policy-specific matching to avoid function call overhead
-            for col_name, col_policy, converter, snapshot, elapsed_times, timestamps in column_data:
-                if snapshot is None:
-                    continue
-                
-                raw_value = None
-                
-                # Inline SYNCHRONIZED policy
-                if col_policy == ChannelPolicy.SYNCHRONIZED:
-                    if ref_timestamp_ns is not None and timestamps:
-                        # Always use binary search - it's faster even for small datasets
-                        ts_idx = bisect.bisect_left(timestamps, ref_timestamp_ns)
-                        for i in [ts_idx, ts_idx - 1, ts_idx + 1]:
-                            if 0 <= i < len(snapshot):
-                                if abs(timestamps[i] - ref_timestamp_ns) <= 1000:
-                                    raw_value = snapshot[i].value
-                                    break
-                
-                # Inline INTERPOLATED policy
-                elif col_policy == ChannelPolicy.INTERPOLATED:
-                    if elapsed_times:
-                        # Always use binary search - it's faster even for small datasets
-                        # O(log n) is better than O(n) even for n < 50 when called thousands of times
-                        idx = bisect.bisect_left(elapsed_times, current_time)
-                        before_idx = idx - 1
-                        after_idx = idx
-                        
-                        # Check if we have points on both sides (for interpolation)
-                        has_before = before_idx >= 0
-                        has_after = after_idx < len(snapshot)
-                        
-                        # Use strict tolerance for single-side matching, but allow interpolation
-                        # when we have points on both sides even if slightly outside tolerance
-                        before_valid = has_before and abs(elapsed_times[before_idx] - current_time) <= interp_tolerance
-                        after_valid = has_after and abs(elapsed_times[after_idx] - current_time) <= interp_tolerance
-                        
-                        # If we have points on both sides, allow interpolation even if outside strict tolerance
-                        # This handles cases where points are slightly further apart than the tolerance
-                        if has_before and has_after:
-                            before_point = snapshot[before_idx]
-                            after_point = snapshot[after_idx]
-                            t1, v1 = before_point.elapsed_time, before_point.value
-                            t2, v2 = after_point.elapsed_time, after_point.value
-                            
-                            # Use a more lenient tolerance for interpolation (5x row_interval)
-                            lenient_tolerance = row_interval * 5.0
-                            if abs(t1 - current_time) <= lenient_tolerance and abs(t2 - current_time) <= lenient_tolerance:
-                                if abs(t2 - t1) >= 1e-9:
-                                    try:
-                                        if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
-                                            raw_value = v1 + (v2 - v1) * (current_time - t1) / (t2 - t1)
-                                        else:
-                                            raw_value = v1 if abs(current_time - t1) < abs(current_time - t2) else v2
-                                    except (TypeError, ValueError):
-                                        raw_value = v1
-                                else:
-                                    raw_value = v1
-                            elif before_valid:
-                                raw_value = snapshot[before_idx].value
-                            elif after_valid:
-                                raw_value = snapshot[after_idx].value
-                        elif before_valid:
-                            raw_value = snapshot[before_idx].value
-                        elif after_valid:
-                            raw_value = snapshot[after_idx].value
-                
-                # Inline ASYNCHRONOUS policy
-                elif col_policy == ChannelPolicy.ASYNCHRONOUS:
-                    if elapsed_times:
-                        # Always use binary search - it's faster even for small datasets
-                        idx = bisect.bisect_left(elapsed_times, current_time)
-                        closest = None
-                        min_diff = float('inf')
-                        
-                        if idx < len(snapshot):
-                            diff = abs(elapsed_times[idx] - current_time)
-                            if diff < min_diff and diff <= interp_tolerance:
-                                min_diff = diff
-                                closest = snapshot[idx].value
-                        
-                        if idx > 0:
-                            diff = abs(elapsed_times[idx - 1] - current_time)
-                            if diff < min_diff and diff <= interp_tolerance:
-                                closest = snapshot[idx - 1].value
-                        
-                        raw_value = closest
-                
-                # Apply converter
-                if raw_value is not None:
-                    try:
-                        converted_value = converter(raw_value)
-                        row_data[col_name] = converted_value
-                        # Update last known value for forward-fill (INTERPOLATED and ASYNCHRONOUS)
-                        if col_policy in (ChannelPolicy.INTERPOLATED, ChannelPolicy.ASYNCHRONOUS):
-                            last_known_values[col_name] = converted_value
-                    except Exception:
-                        pass
-                elif col_policy in (ChannelPolicy.INTERPOLATED, ChannelPolicy.ASYNCHRONOUS) and col_name in last_known_values:
-                    # Forward-fill: use last known value if matching failed
-                    row_data[col_name] = last_known_values[col_name]
+            # Process columns for this row
+            row_data = self._process_columns_for_row(
+                column_data, column_names, current_time, ref_timestamp_ns,
+                row_interval, interp_tolerance, last_known_values
+            )
             
             # Create virtual row
             self.rows.append(VirtualRow(timestamp=current_time, data=row_data))
