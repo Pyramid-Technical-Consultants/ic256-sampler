@@ -15,7 +15,7 @@ from typing import Optional, Dict
 from .styles import COLORS, FONTS, apply_theme
 from .components import ToolTip
 from .tabs import MainTab, SettingsTab, LogTab
-from .utils import ImageLoader, WindowStateManager
+from .utils import ImageLoader
 from ..utils import is_valid_device
 
 
@@ -42,7 +42,6 @@ class GUI:
         
         # Initialize utilities
         self.image_loader = ImageLoader()
-        self.window_state = WindowStateManager(self.root)
         
         # Set window icon
         self.image_loader.set_window_icon(self.root)
@@ -53,8 +52,8 @@ class GUI:
         # Bind keyboard shortcuts
         self._setup_keyboard_shortcuts()
         
-        # Load and apply window state
-        self.window_state.load()
+        # Set initial window size
+        self.root.geometry("600x500")
         
         # Create data directory if needed
         self._ensure_data_directory()
@@ -202,7 +201,7 @@ class GUI:
         self._create_message_frame()
         
         # Set up window close handler
-        self.window_state.setup_close_handler(self._on_window_close)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_window_close)
         
         self.root.update_idletasks()
         self.root.mainloop()

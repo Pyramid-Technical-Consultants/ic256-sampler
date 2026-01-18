@@ -5,7 +5,7 @@ from typing import Callable
 from tkinter import filedialog
 
 from ..styles import COLORS, FONTS
-from ..styles.sizes import BUTTON_PADY, TAB_CONTENT_PADX
+from ..styles.sizes import BUTTON_PADY, CONTENT_PAD
 from ..components import (
     StandardButton,
     StandardSection,
@@ -58,7 +58,7 @@ class SettingsTab:
         
         # Create padded container for consistent spacing
         main_container = tk.Frame(scrollable_frame, bg=COLORS["background"])
-        main_container.grid(row=0, column=0, padx=(TAB_CONTENT_PADX, TAB_CONTENT_PADX), sticky="nsew")
+        main_container.grid(row=0, column=0, padx=(CONTENT_PAD, CONTENT_PAD), pady=(CONTENT_PAD, CONTENT_PAD), sticky="nsew")
         # Configure grid for sections - column 0 should expand
         main_container.grid_columnconfigure(0, weight=1)
         scrollable_frame.grid_columnconfigure(0, weight=1)

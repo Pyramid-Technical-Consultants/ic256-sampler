@@ -13,4 +13,4 @@ BUTTON_PADY = 6  # Vertical padding for buttons (combined with font gives STANDA
 
 # Standard horizontal padding for tab content containers
 # This provides consistent spacing from the window edges for all fieldsets
-TAB_CONTENT_PADX = 20
+CONTENT_PAD = 20
