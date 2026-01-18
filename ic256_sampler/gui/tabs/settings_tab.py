@@ -15,7 +15,7 @@ from ..components import (
     IconButton,
     ToolTip,
 )
-from ..utils import create_scrollable_tab_content, open_directory
+from ..utils import open_directory
 from ...config import update_file_json, init_ip
 from ...utils import is_valid_device
 

@@ -2,43 +2,28 @@
 
 import os
 import sys
-from typing import Optional
+import tkinter as tk
 
 
 def open_directory(path: str) -> bool:
-    """Open a directory in the system's default file manager.
-    
-    Args:
-        path: Directory path to open
-        
-    Returns:
-        True if successful, False otherwise
-    """
+    """Open a directory in the system's default file manager."""
     if not path or not os.path.isdir(path):
         return False
-    
+
     try:
         if sys.platform == "win32":
             os.startfile(path)
-        elif sys.platform == "darwin":  # macOS
+        elif sys.platform == "darwin":
             os.system(f'open "{path}"')
-        else:  # Linux and other Unix-like systems
+        else:
             os.system(f'xdg-open "{path}"')
         return True
     except Exception:
         return False
 
 
-def copy_to_clipboard(root, text: str) -> bool:
-    """Copy text to system clipboard.
-    
-    Args:
-        root: Tk root window
-        text: Text to copy
-        
-    Returns:
-        True if successful, False otherwise
-    """
+def copy_to_clipboard(root: tk.Tk, text: str) -> bool:
+    """Copy text to system clipboard."""
     try:
         root.clipboard_clear()
         root.clipboard_append(text)

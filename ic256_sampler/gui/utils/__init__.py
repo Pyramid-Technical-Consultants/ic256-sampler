@@ -8,7 +8,7 @@ from .thread_safe import (
     set_button_state_safe,
 )
 from .file_utils import open_directory, copy_to_clipboard
-from .tab_helpers import setup_tab_frame, create_scrollable_tab_content
+from .tab_helpers import setup_tab_frame
 
 __all__ = [
     "ImageLoader",
@@ -19,5 +19,4 @@ __all__ = [
     "open_directory",
     "copy_to_clipboard",
     "setup_tab_frame",
-    "create_scrollable_tab_content",
 ]

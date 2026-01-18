@@ -10,7 +10,7 @@ import tkinter as tk
 from tkinter import ttk
 import threading
 from datetime import datetime
-from typing import Optional, Dict
+from typing import Dict
 
 from .styles import COLORS, FONTS, apply_theme
 from .components import ToolTip
