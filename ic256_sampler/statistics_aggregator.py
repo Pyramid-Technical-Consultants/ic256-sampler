@@ -1,7 +1,7 @@
 """Statistics aggregation utilities for data collection."""
 
 import time
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Callable
 
 
 def format_file_size(size_bytes: int) -> str:

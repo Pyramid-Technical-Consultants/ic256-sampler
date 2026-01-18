@@ -1,15 +1,9 @@
-# install: pip install websocket-client msgpack // python3
-
 import websocket
 import time
 import msgpack
 import requests
 
 
-# usage
-# ip = "10.11.25.105"
-# client = IGXWebsocketClient(ip)
-# client.startCollect(delay=0.1, duration=10, fields=fields, onMessage=onMessageEvent)
 class IGXField:
     def __init__(self, client, path):
         self.client = client

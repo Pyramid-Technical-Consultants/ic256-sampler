@@ -11,7 +11,6 @@ VirtualDatabase and CSVWriter for output.
 import time
 import threading
 from typing import Dict, List, Optional, Any, Callable
-from pathlib import Path
 from .device_manager import DeviceManager, IC256_CONFIG, TX2_CONFIG
 from .io_database import IODatabase
 from .virtual_database import VirtualDatabase, ColumnDefinition
