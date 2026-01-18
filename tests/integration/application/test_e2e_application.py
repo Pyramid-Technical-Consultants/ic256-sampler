@@ -45,7 +45,7 @@ class TestEndToEndApplication:
         
         app._ensure_connections()
         assert app.device_manager is not None
-        assert "IC256-42/35" in app.device_manager.connections
+        assert "IC256" in app.device_manager.connections
         
         # Start data collection
         device_thread = threading.Thread(
@@ -116,7 +116,7 @@ class TestEndToEndApplication:
         
         app._ensure_connections()
         assert app.device_manager is not None
-        assert "IC256-42/35" in app.device_manager.connections
+        assert "IC256" in app.device_manager.connections
         
         # Start collection
         device_thread = threading.Thread(

@@ -5,7 +5,7 @@ from typing import Callable
 from tkinter import filedialog
 
 from ..styles import COLORS, FONTS
-from ..styles.sizes import BUTTON_PADY, CONTENT_PAD
+from ..styles.sizes import WIDGET_PADY, CONTENT_PAD
 from ..components import (
     StandardButton,
     StandardSection,
@@ -103,7 +103,7 @@ class SettingsTab:
         search_icon = self.image_loader.load_image("search.png", (20, 20))
         ic256_field = FormFieldWithButton(
             device_section,
-            "IC256-42/35:",
+            "IC256:",
             row=0,
             column=0,
             entry_width=30,
@@ -166,7 +166,7 @@ class SettingsTab:
             fg_color=COLORS["primary"],
             text_color=COLORS["text_primary"]
         )
-        self.set_up_button.grid(row=0, column=2, padx=(0, 5), pady=BUTTON_PADY)
+        self.set_up_button.grid(row=0, column=2, padx=(0, 5), pady=WIDGET_PADY)
         ToolTip(self.set_up_button, "Apply sampling rate configuration to all devices", 0, 20)
     
     def _create_path_section(self, parent: tk.Widget):
@@ -200,7 +200,7 @@ class SettingsTab:
             fg_color=COLORS["primary"],
             text_color=COLORS["text_primary"]
         )
-        browse_button.grid(row=0, column=2, padx=(0, 5), pady=BUTTON_PADY)
+        browse_button.grid(row=0, column=2, padx=(0, 5), pady=WIDGET_PADY)
         
         # Open folder button
         open_icon = self.image_loader.load_image("open_folder.png", (13, 13))
@@ -208,9 +208,8 @@ class SettingsTab:
             path_section,
             open_icon,
             command=self._open_directory,
-            size=(20, 20)
         )
-        open_button.grid(row=0, column=3, padx=(0, 5), pady=BUTTON_PADY)
+        open_button.grid(row=0, column=3, padx=(0, 5), pady=WIDGET_PADY)
     
     def _create_save_section(self, parent: tk.Widget):
         """Create save configuration section."""

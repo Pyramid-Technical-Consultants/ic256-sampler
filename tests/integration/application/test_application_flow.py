@@ -38,7 +38,7 @@ class TestApplicationDataCollectionFlow:
         app._ensure_connections()
         
         device_manager = app.device_manager
-        connection = device_manager.connections["IC256-42/35"]
+        connection = device_manager.connections["IC256"]
         
         # Simulate the exact flow from _device_thread
         device_manager.stop_event = app.stop_event
@@ -96,7 +96,7 @@ class TestApplicationDataCollectionFlow:
         app._ensure_connections()
         
         device_manager = app.device_manager
-        connection = device_manager.connections["IC256-42/35"]
+        connection = device_manager.connections["IC256"]
         
         device_manager.stop_event = app.stop_event
         device_manager.stop()

@@ -22,7 +22,7 @@ class TestWebsocketPersistence:
         # First acquisition
         app._ensure_connections()
         device_manager = app.device_manager
-        connection = device_manager.connections["IC256-42/35"]
+        connection = device_manager.connections["IC256"]
         original_ws = connection.client.ws
         
         # Track reconnect calls

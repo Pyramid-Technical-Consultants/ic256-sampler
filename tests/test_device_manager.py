@@ -284,7 +284,7 @@ class TestDeviceManagerThreadCoordination:
             keepalive_thread=mock_keepalive_thread,
         )
         
-        manager.connections["IC256-42/35"] = connection
+        manager.connections["IC256"] = connection
         
         # Start the manager
         manager.start()
@@ -319,7 +319,7 @@ class TestDeviceManagerThreadCoordination:
             keepalive_thread=MagicMock(),
         )
         
-        manager.connections["IC256-42/35"] = connection
+        manager.connections["IC256"] = connection
         
         # Stop the manager (non-blocking)
         manager.stop()
@@ -351,7 +351,7 @@ class TestDeviceManagerThreadCoordination:
             keepalive_thread=MagicMock(),
         )
         
-        manager.connections["IC256-42/35"] = connection
+        manager.connections["IC256"] = connection
         
         # Call start multiple times
         manager.start()
@@ -551,8 +551,8 @@ class TestDeviceManagerRealDeviceIntegration:
         assert success, "Device should be added successfully"
         
         # Get the connection to verify it exists
-        assert "IC256-42/35" in device_manager.connections
-        connection = device_manager.connections["IC256-42/35"]
+        assert "IC256" in device_manager.connections
+        connection = device_manager.connections["IC256"]
         
         # Get initial database state
         initial_stats = device_manager.io_database.get_statistics()
@@ -631,7 +631,7 @@ class TestDeviceManagerRealDeviceIntegration:
         assert success, "Device should be added successfully"
         
         # Verify connection exists
-        assert "IC256-42/35" in device_manager.connections
+        assert "IC256" in device_manager.connections
         
         # Start collection
         device_manager.start()
@@ -712,8 +712,8 @@ class TestDeviceManagerRealDeviceIntegration:
         assert success, "Device should be added successfully"
         
         # Verify connection exists
-        assert "IC256-42/35" in device_manager.connections, "IC256 device connection should be established"
-        connection = device_manager.connections["IC256-42/35"]
+        assert "IC256" in device_manager.connections, "IC256 device connection should be established"
+        connection = device_manager.connections["IC256"]
         assert connection.ip_address == ic256_ip, f"Connection should use correct IP: {ic256_ip}"
         
         # Get initial database state
@@ -960,8 +960,8 @@ class TestDeviceManagerRealDeviceIntegration:
         assert success, "Device should be added successfully"
         
         # Verify connection exists
-        assert "IC256-42/35" in device_manager.connections, "IC256 device connection should be established"
-        connection = device_manager.connections["IC256-42/35"]
+        assert "IC256" in device_manager.connections, "IC256 device connection should be established"
+        connection = device_manager.connections["IC256"]
         
         # Get IODatabase
         io_database = device_manager.get_io_database()

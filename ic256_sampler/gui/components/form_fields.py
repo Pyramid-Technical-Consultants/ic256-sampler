@@ -4,7 +4,7 @@ import tkinter as tk
 from typing import Optional, Callable
 
 from ..styles import COLORS, FONTS
-from ..styles.sizes import ENTRY_PADY
+from ..styles.sizes import WIDGET_PADY
 from .entries import StandardEntry
 from .icon_buttons import IconButton
 from .tooltip import ToolTip
@@ -60,14 +60,12 @@ class FormField:
             width=label_width,
             anchor="w"
         )
-        self.label.grid(row=row, column=column, padx=(5, 10), pady=ENTRY_PADY, sticky="w")
+        self.label.grid(row=row, column=column, padx=(5, 10), pady=WIDGET_PADY, sticky="w")
         
-        # Entry (wrapped in frame for consistent height)
+        # Entry
         self.entry = StandardEntry.create(parent, width=entry_width, **filtered_kwargs)
         self.entry.config(state=entry_state)
-        # Place the frame wrapper instead of entry directly
-        entry_frame = self.entry._entry_frame
-        entry_frame.grid(row=row, column=column + 1, padx=(0, 5), pady=ENTRY_PADY, sticky="ew")
+        self.entry._entry_frame.grid(row=row, column=column + 1, padx=(0, 5), pady=WIDGET_PADY, sticky="ew")
         
         # Configure parent column for entry expansion
         parent.grid_columnconfigure(column + 1, weight=1)
@@ -144,14 +142,13 @@ class FormFieldWithButton:
             width=label_width,
             anchor="w"
         )
-        self.label.grid(row=row, column=column, padx=(5, 10), pady=ENTRY_PADY, sticky="w")
+        self.label.grid(row=row, column=column, padx=(5, 10), pady=WIDGET_PADY, sticky="w")
         
         # Entry (wrapped in frame for consistent height)
         self.entry = StandardEntry.create(parent, width=entry_width, **entry_kwargs)
         self.entry.config(state=entry_state)
         # Place the frame wrapper instead of entry directly
-        entry_frame = self.entry._entry_frame
-        entry_frame.grid(row=row, column=column + 1, padx=(0, 5), pady=ENTRY_PADY, sticky="ew")
+        self.entry._entry_frame.grid(row=row, column=column + 1, padx=(0, 5), pady=WIDGET_PADY, sticky="ew")
         
         # Configure parent column for entry expansion
         parent.grid_columnconfigure(column + 1, weight=1)
@@ -173,9 +170,8 @@ class FormFieldWithButton:
                 button_image,
                 command=button_command,
                 tooltip=button_tooltip,
-                size=(24, 24)
             )
-            self.button.grid(row=row, column=column + 2, padx=(0, 5), pady=ENTRY_PADY)
+            self.button.grid(row=row, column=column + 2, padx=(0, 5), pady=WIDGET_PADY)
     
     def get(self) -> str:
         """Get entry value."""

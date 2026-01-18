@@ -53,7 +53,7 @@ class TestApplicationFileSizeDisplay:
              patch('ic256_sampler.application.log_message_safe'):
             
             # First acquisition
-            app.device_statistics = {"IC256-42/35": {"rows": 1000, "file_size": 50000, "file_path": "/tmp/test1.csv"}}
+            app.device_statistics = {"IC256": {"rows": 1000, "file_size": 50000, "file_path": "/tmp/test1.csv"}}
             app.stats_thread = threading.Thread(
                 target=app._update_statistics,
                 name="first_stats_thread",
@@ -73,7 +73,7 @@ class TestApplicationFileSizeDisplay:
             # Second acquisition
             file_size_updates.clear()
             app.stop_event.clear()
-            app.device_statistics = {"IC256-42/35": {"rows": 0, "file_size": 0, "file_path": ""}}
+            app.device_statistics = {"IC256": {"rows": 0, "file_size": 0, "file_path": ""}}
             app.stats_thread = threading.Thread(
                 target=app._update_statistics,
                 name="second_stats_thread",
@@ -81,7 +81,7 @@ class TestApplicationFileSizeDisplay:
             )
             app.stats_thread.start()
             time.sleep(0.2)
-            app.device_statistics = {"IC256-42/35": {"rows": 500, "file_size": 25000, "file_path": "/tmp/test2.csv"}}
+            app.device_statistics = {"IC256": {"rows": 500, "file_size": 25000, "file_path": "/tmp/test2.csv"}}
             time.sleep(0.3)
             
             app.stop_event.set()
@@ -216,7 +216,7 @@ class TestApplicationFileSizeDisplay:
              patch('ic256_sampler.application.log_message_safe'):
             
             # First thread
-            app.device_statistics = {"IC256-42/35": {"rows": 100, "file_size": 5000, "file_path": ""}}
+            app.device_statistics = {"IC256": {"rows": 100, "file_size": 5000, "file_path": ""}}
             app.stats_thread = threading.Thread(
                 target=app._update_statistics,
                 name="first_stats_thread",
@@ -235,7 +235,7 @@ class TestApplicationFileSizeDisplay:
             
             update_threads.clear()
             app.stop_event.clear()
-            app.device_statistics = {"IC256-42/35": {"rows": 0, "file_size": 0, "file_path": ""}}
+            app.device_statistics = {"IC256": {"rows": 0, "file_size": 0, "file_path": ""}}
             app.stats_thread = threading.Thread(
                 target=app._update_statistics,
                 name="second_stats_thread",
@@ -243,7 +243,7 @@ class TestApplicationFileSizeDisplay:
             )
             app.stats_thread.start()
             time.sleep(0.3)
-            app.device_statistics = {"IC256-42/35": {"rows": 200, "file_size": 10000, "file_path": ""}}
+            app.device_statistics = {"IC256": {"rows": 200, "file_size": 10000, "file_path": ""}}
             time.sleep(0.3)
             
             app.stop_event.set()

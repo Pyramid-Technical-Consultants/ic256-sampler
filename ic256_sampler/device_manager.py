@@ -870,7 +870,7 @@ def create_tx2_channels(client: IGXWebsocketClient) -> Dict[str, Any]:
 
 # Device configurations
 IC256_CONFIG = DeviceConfig(
-    device_name="IC256-42/35",
+    device_name="IC256",
     device_type="IC256",
     channel_creator=create_ic256_channels,
     env_channel_creator=None,  # Environmental channels now included in main channels

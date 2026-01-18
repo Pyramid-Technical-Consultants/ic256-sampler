@@ -2,7 +2,7 @@
 
 from .colors import COLORS
 from .fonts import FONTS
-from .sizes import STANDARD_WIDGET_HEIGHT, ENTRY_PADY, BUTTON_PADY, CONTENT_PAD
+from .sizes import WIDGET_HEIGHT, WIDGET_PADY, WIDGET_PADY, CONTENT_PAD
 from .theme import apply_theme
 
-__all__ = ["COLORS", "FONTS", "STANDARD_WIDGET_HEIGHT", "ENTRY_PADY", "BUTTON_PADY", "CONTENT_PAD", "apply_theme"]
+__all__ = ["COLORS", "FONTS", "WIDGET_HEIGHT", "WIDGET_PADY", "WIDGET_PADY", "CONTENT_PAD", "apply_theme"]

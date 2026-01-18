@@ -55,7 +55,6 @@ class LogTab:
         search_label.grid(row=0, column=0, padx=(0, 10), sticky="w")
         
         self.log_search_entry = StandardEntry.create(search_frame, width=40)
-        # Place the frame wrapper for consistent height
         self.log_search_entry._entry_frame.grid(row=0, column=1, sticky="ew", padx=(0, 0))
         # Bind events to the actual entry widget
         self.log_search_entry.bind('<KeyRelease>', self._filter_log)

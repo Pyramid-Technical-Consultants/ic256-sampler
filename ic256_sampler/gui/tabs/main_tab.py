@@ -4,7 +4,7 @@ import tkinter as tk
 from typing import Callable, Optional
 
 from ..styles import COLORS, FONTS
-from ..styles.sizes import ENTRY_PADY, CONTENT_PAD
+from ..styles.sizes import WIDGET_PADY, CONTENT_PAD
 from ..components import (
     StandardButton,
     StandardSection,
@@ -86,7 +86,7 @@ class MainTab:
         self.note_entry_wrapper = note_placeholder
         self.note_entry = note_placeholder.get_widget()
         # Entry is wrapped in frame for consistent height, place the frame
-        note_placeholder.entry_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=ENTRY_PADY)
+        note_placeholder.entry_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=WIDGET_PADY)
         ToolTip(self.note_entry, "Optional note to include in the CSV file name and metadata", 0, 20)
     
     def _create_time_section(self, parent: tk.Widget):
