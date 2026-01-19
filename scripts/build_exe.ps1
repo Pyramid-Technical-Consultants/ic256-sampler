@@ -17,7 +17,7 @@ $DistDir = Join-Path $ProjectRoot "dist"
 $BuildDir = Join-Path $ProjectRoot "build"
 $PyProjectFile = Join-Path $ProjectRoot "pyproject.toml"
 $IconFile = Join-Path $ScriptDir "logo.ico"
-$AssetsDir = Join-Path $ProjectRoot "ic256_sampler" "assets" "images"
+$AssetsDir = Join-Path $ProjectRoot (Join-Path "ic256_sampler" (Join-Path "assets" "images"))
 
 # Function to get version from pyproject.toml
 function Get-VersionFromPyProject {
