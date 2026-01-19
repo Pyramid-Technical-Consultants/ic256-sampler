@@ -51,16 +51,17 @@ ic256-sampler/
 
 ### Package Structure (`ic256_sampler/`)
 
-All application code is organized in a proper Python package:
+All application code is organized in a proper Python package following PEP 8 naming conventions (snake_case):
 
 - **`__init__.py`**: Package metadata and version information
+- **`__main__.py`**: Module entry point (enables `python -m ic256_sampler`)
 - **`main.py`**: Application entry point with `main()` function
-- **`gui.py`**: Tkinter-based GUI implementation
-- **`data_collection.py`**: Core data collection and CSV writing logic
+- **`application.py`**: Main application class
 - **`config.py`**: Configuration file management
 - **`utils.py`**: Utility functions (IP validation, device validation)
 - **`igx_client.py`**: WebSocket client for device communication
 - **`device_paths.py`**: Device API path configuration
+- **`gui/`**: GUI package with modular components
 - **`assets/images/`**: Application images and icons
 
 ### Configuration Files
@@ -102,21 +103,26 @@ from .config import update_file_json
 
 ## Running the Application
 
-### Development Mode
+### Standard Python Methods
+
+This project supports all standard Python ways to run an application:
 
 ```bash
-# Install in editable mode
+# 1. After installation (recommended for end users)
 pip install -e .
-
-# Run via entry point
 ic256-sampler
 
-# Or run directly
+# 2. As a Python module (standard, recommended)
+python -m ic256_sampler
+
+# 3. Direct script execution (development convenience)
 python run.py
 
-# Or run as module
+# 4. Via entry point module
 python -m ic256_sampler.main
 ```
+
+All methods are equivalent and follow Python packaging best practices.
 
 ### Configuration
 

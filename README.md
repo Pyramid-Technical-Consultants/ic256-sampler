@@ -83,49 +83,89 @@ Collected data is saved as CSV files with the following naming convention:
 
 ## Project Structure
 
+This project follows standard Python packaging conventions (PEP 518/621):
+
 ```
 ic256-sampler/
-├── ic256_sampler/          # Main package
-│   ├── __init__.py
+├── ic256_sampler/          # Main Python package (snake_case)
+│   ├── __init__.py        # Package initialization
+│   ├── __main__.py        # Module entry point (python -m ic256_sampler)
 │   ├── main.py            # Application entry point
-│   ├── gui.py             # GUI implementation
-│   ├── data_collection.py  # Data collection logic
+│   ├── application.py     # Main application class
 │   ├── config.py          # Configuration management
 │   ├── utils.py           # Utility functions
 │   ├── igx_client.py      # WebSocket client
 │   ├── device_paths.py    # Device path configuration
 │   └── assets/
 │       └── images/        # Application images
-├── tests/                 # Test suite
-├── data/                  # Data output directory
-├── config.json           # Application configuration
-├── pyproject.toml        # Project configuration
+├── tests/                 # Test suite (pytest)
+│   ├── unit/             # Unit tests
+│   └── integration/     # Integration tests
+├── setup/                 # Build scripts and tools
+│   ├── build-exe.ps1     # PyInstaller build script
+│   └── BuildForIC256.iss # Inno Setup installer script
+├── data/                  # Data output directory (gitignored)
+├── pyproject.toml        # Modern Python project config (PEP 518/621)
 ├── requirements.txt      # Python dependencies
-└── README.md            # This file
+├── MANIFEST.in          # Package data inclusion rules
+├── README.md            # This file
+└── LICENSE              # License file
+```
+
+### Running the Application
+
+Standard Python ways to run the application:
+
+```bash
+# After installation (recommended)
+pip install -e .
+ic256-sampler
+
+# As a Python module (standard way)
+python -m ic256_sampler
+
+# Direct script execution (development)
+python run.py
+
+# Or using the entry point script
+python -m ic256_sampler.main
 ```
 
 ## Development
 
 ### Setting Up Development Environment
 
-1. Install development dependencies:
+1. Create a virtual environment (recommended):
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
+2. Install the package in editable mode with development dependencies:
 ```bash
 pip install -e ".[dev]"
 ```
 
-2. Run tests:
+3. Run tests:
 ```bash
-pytest
+pytest                    # All tests
+pytest tests/unit/       # Unit tests only
+pytest -m "not integration"  # Skip integration tests
 ```
 
-3. Run linting:
+4. Run linting:
 ```bash
 ruff check .
 ```
 
-4. Format code:
+5. Format code:
 ```bash
 ruff format .
+```
+
+6. Type checking (optional):
+```bash
+mypy ic256_sampler
 ```
 
 ### Code Style

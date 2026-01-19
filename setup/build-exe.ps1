@@ -2,8 +2,9 @@
 # This script uses PyInstaller to create a standalone Windows executable
 
 param(
-    [string]$Version = "1.0.0",
-    [switch]$Clean = $false
+    [string]$Version = "",
+    [switch]$Clean = $false,
+    [switch]$SkipValidation = $false
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,59 +15,157 @@ $ProjectRoot = Split-Path -Parent $ScriptDir
 $SpecFile = Join-Path $ScriptDir "ic256-sampler.spec"
 $DistDir = Join-Path $ProjectRoot "dist"
 $BuildDir = Join-Path $ProjectRoot "build"
+$PyProjectFile = Join-Path $ProjectRoot "pyproject.toml"
+$IconFile = Join-Path $ScriptDir "logo.ico"
+$AssetsDir = Join-Path $ProjectRoot "ic256_sampler" "assets" "images"
 
-Write-Host "Building IC256 Sampler v$Version" -ForegroundColor Green
-Write-Host "Project Root: $ProjectRoot" -ForegroundColor Cyan
+# Function to get version from pyproject.toml
+function Get-VersionFromPyProject {
+    if (Test-Path $PyProjectFile) {
+        $content = Get-Content $PyProjectFile -Raw
+        if ($content -match 'version\s*=\s*"([^"]+)"') {
+            return $matches[1]
+        }
+    }
+    return "1.0.0"
+}
+
+# Get version
+if ([string]::IsNullOrEmpty($Version)) {
+    $Version = Get-VersionFromPyProject
+}
+
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "  IC256 Sampler Build Script" -ForegroundColor Cyan
+Write-Host "  Version: $Version" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "Project Root: $ProjectRoot" -ForegroundColor Gray
+Write-Host ""
+
+# Validation checks
+if (-not $SkipValidation) {
+    Write-Host "Running pre-build validation..." -ForegroundColor Yellow
+    
+    # Check Python
+    try {
+        $pythonVersion = python --version 2>&1
+        Write-Host "  Python: $pythonVersion" -ForegroundColor Green
+    } catch {
+        Write-Host "  ERROR: Python not found in PATH" -ForegroundColor Red
+        exit 1
+    }
+    
+    # Check PyInstaller
+    try {
+        $pyinstallerVersion = pyinstaller --version 2>&1
+        Write-Host "  PyInstaller: $pyinstallerVersion" -ForegroundColor Green
+    } catch {
+        Write-Host "  PyInstaller not found. Installing..." -ForegroundColor Yellow
+        pip install pyinstaller
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  ERROR: Failed to install PyInstaller" -ForegroundColor Red
+            exit 1
+        }
+    }
+    
+    # Check spec file
+    if (-not (Test-Path $SpecFile)) {
+        Write-Host "  ERROR: Spec file not found: $SpecFile" -ForegroundColor Red
+        Write-Host "  Please ensure ic256-sampler.spec exists in the setup directory" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "  Spec file: Found" -ForegroundColor Green
+    
+    # Check icon file
+    if (-not (Test-Path $IconFile)) {
+        Write-Host "  WARNING: Icon file not found: $IconFile" -ForegroundColor Yellow
+    } else {
+        Write-Host "  Icon file: Found" -ForegroundColor Green
+    }
+    
+    # Check assets directory
+    if (-not (Test-Path $AssetsDir)) {
+        Write-Host "  WARNING: Assets directory not found: $AssetsDir" -ForegroundColor Yellow
+    } else {
+        $imageCount = (Get-ChildItem $AssetsDir -File).Count
+        Write-Host "  Assets: Found ($imageCount images)" -ForegroundColor Green
+    }
+    
+    # Check entry point
+    $EntryPoint = Join-Path $ProjectRoot "run.py"
+    if (-not (Test-Path $EntryPoint)) {
+        Write-Host "  ERROR: Entry point not found: $EntryPoint" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "  Entry point: Found" -ForegroundColor Green
+    
+    Write-Host "Validation complete!" -ForegroundColor Green
+    Write-Host ""
+}
 
 # Clean previous builds if requested
 if ($Clean) {
     Write-Host "Cleaning previous builds..." -ForegroundColor Yellow
-    if (Test-Path $DistDir) { Remove-Item -Recurse -Force $DistDir }
-    if (Test-Path $BuildDir) { Remove-Item -Recurse -Force $BuildDir }
-}
-
-# Check if PyInstaller is installed
-try {
-    $null = Get-Command pyinstaller -ErrorAction Stop
-} catch {
-    Write-Host "PyInstaller not found. Installing..." -ForegroundColor Yellow
-    pip install pyinstaller
-}
-
-# Check if spec file exists, create if not
-if (-not (Test-Path $SpecFile)) {
-    Write-Host "Creating PyInstaller spec file..." -ForegroundColor Yellow
-    pyinstaller --name ic256-sampler `
-        --onefile `
-        --windowed `
-        --icon "$(Join-Path $ScriptDir 'logo.ico')" `
-        --add-data "$(Join-Path $ProjectRoot 'ic256_sampler' 'assets' 'images');ic256_sampler/assets/images" `
-        --hidden-import=PIL `
-        --hidden-import=PIL._imaging `
-        --hidden-import=portalocker `
-        --hidden-import=websocket `
-        --distpath $DistDir `
-        --workpath $BuildDir `
-        --specpath $ScriptDir `
-        "$(Join-Path $ProjectRoot 'run.py')" `
-        --noconfirm
+    if (Test-Path $DistDir) {
+        Remove-Item -Recurse -Force $DistDir
+        Write-Host "  Removed: $DistDir" -ForegroundColor Gray
+    }
+    if (Test-Path $BuildDir) {
+        Remove-Item -Recurse -Force $BuildDir
+        Write-Host "  Removed: $BuildDir" -ForegroundColor Gray
+    }
+    Write-Host ""
 }
 
 # Build using spec file
-Write-Host "Building executable..." -ForegroundColor Green
-pyinstaller --clean $SpecFile
+Write-Host "Building executable with PyInstaller..." -ForegroundColor Green
+Write-Host "  Spec file: $SpecFile" -ForegroundColor Gray
+Write-Host "  Output: $DistDir" -ForegroundColor Gray
+Write-Host ""
 
-if ($LASTEXITCODE -eq 0) {
+$buildStartTime = Get-Date
+pyinstaller --clean --noconfirm $SpecFile
+$buildExitCode = $LASTEXITCODE
+$buildDuration = (Get-Date) - $buildStartTime
+
+Write-Host ""
+
+if ($buildExitCode -eq 0) {
     $ExePath = Join-Path $DistDir "ic256-sampler.exe"
     if (Test-Path $ExePath) {
-        Write-Host "`nBuild successful!" -ForegroundColor Green
+        $exeInfo = Get-Item $ExePath
+        $exeSizeMB = [math]::Round($exeInfo.Length / 1MB, 2)
+        $exeSizeKB = [math]::Round($exeInfo.Length / 1KB, 0)
+        
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host "  Build Successful!" -ForegroundColor Green
+        Write-Host "========================================" -ForegroundColor Green
         Write-Host "Executable: $ExePath" -ForegroundColor Cyan
-        Write-Host "Size: $([math]::Round((Get-Item $ExePath).Length / 1MB, 2)) MB" -ForegroundColor Cyan
+        Write-Host "Size: $exeSizeMB MB ($exeSizeKB KB)" -ForegroundColor Cyan
+        Write-Host "Build time: $($buildDuration.TotalSeconds.ToString('F1')) seconds" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "Next steps:" -ForegroundColor Yellow
+        Write-Host "  1. Test the executable: & '$ExePath'" -ForegroundColor Gray
+        Write-Host "  2. Build installer: iscc setup\BuildForIC256.iss" -ForegroundColor Gray
     } else {
-        Write-Host "Build completed but executable not found!" -ForegroundColor Red
+        Write-Host "========================================" -ForegroundColor Red
+        Write-Host "  Build Error!" -ForegroundColor Red
+        Write-Host "========================================" -ForegroundColor Red
+        Write-Host "Build completed but executable not found at:" -ForegroundColor Red
+        Write-Host "  $ExePath" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "Check PyInstaller output above for errors." -ForegroundColor Yellow
         exit 1
     }
 } else {
-    Write-Host "Build failed!" -ForegroundColor Red
+    Write-Host "========================================" -ForegroundColor Red
+    Write-Host "  Build Failed!" -ForegroundColor Red
+    Write-Host "========================================" -ForegroundColor Red
+    Write-Host "PyInstaller exited with code: $buildExitCode" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Common issues:" -ForegroundColor Yellow
+    Write-Host "  - Missing dependencies: pip install -r requirements.txt" -ForegroundColor Gray
+    Write-Host "  - Missing hidden imports: check ic256-sampler.spec" -ForegroundColor Gray
+    Write-Host "  - Path issues: ensure all paths in spec file are correct" -ForegroundColor Gray
     exit 1
 }

@@ -1,0 +1,29 @@
+# MANIFEST.in - Include non-Python files in source distribution
+# This file tells setuptools which additional files to include in the package
+
+# Include license file
+include LICENSE
+include README.md
+
+# Include package data (images)
+recursive-include ic256_sampler/assets *
+
+# Include configuration files
+include pyproject.toml
+include requirements.txt
+
+# Include build scripts (for reference, not installed)
+recursive-include setup *
+prune setup
+
+# Exclude common unwanted files
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude *.pyd
+global-exclude __pycache__
+global-exclude .DS_Store
+global-exclude *.so
+global-exclude .git*
+global-exclude *.swp
+global-exclude *.swo
+global-exclude *~

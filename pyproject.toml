@@ -51,9 +51,9 @@ build = [
 ic256-sampler = "ic256_sampler.main:main"
 
 [project.urls]
-Homepage = "https://github.com/yourusername/ic256-sampler"
-Documentation = "https://github.com/yourusername/ic256-sampler#readme"
-Repository = "https://github.com/yourusername/ic256-sampler"
+Homepage = "https://github.com/Pyramid-Technical-Consultants/ic256-sampler"
+Documentation = "https://github.com/Pyramid-Technical-Consultants/ic256-sampler#readme"
+Repository = "https://github.com/Pyramid-Technical-Consultants/ic256-sampler"
 
 [tool.setuptools]
 packages = ["ic256_sampler"]

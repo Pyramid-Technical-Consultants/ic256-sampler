@@ -28,7 +28,8 @@ MANIFEST
 
 # PyInstaller
 *.manifest
-*.spec
+# Note: setup/ic256-sampler.spec should be tracked for reproducible builds
+!setup/*.spec
 
 # Installer logs
 pip-log.txt
