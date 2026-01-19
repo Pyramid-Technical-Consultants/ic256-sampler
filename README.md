@@ -190,20 +190,18 @@ See `scripts/README.md` for detailed build instructions.
 
 ### Automated Builds (GitHub Actions)
 
-The project includes a GitHub Actions workflow that automatically builds Windows executables:
+The project includes a GitHub Actions workflow for building Windows executables on-demand:
 
-- **Triggers**: 
-  - Pushes to `main` or `develop` branches
-  - Pull requests to `main` or `develop`
-  - Version tags (e.g., `v1.1.0`)
-  - Manual workflow dispatch
+- **Manual trigger only**: The workflow runs only when manually triggered to save compute resources
 - **Artifacts**: Built executables are available as downloadable artifacts in the Actions tab
 - **Workflow file**: `.github/workflows/build.yml`
 
-To download a built executable:
+To build and download an executable:
 1. Go to the **Actions** tab in GitHub
-2. Select the workflow run
-3. Download the artifact named `ic256-sampler-windows-{version}`
+2. Select **Build Windows Executable** from the workflow list
+3. Click **Run workflow** and select the branch (usually `main`)
+4. Wait for the workflow to complete
+5. Download the artifact named `ic256-sampler-windows-{version}`
 
 ## License
 

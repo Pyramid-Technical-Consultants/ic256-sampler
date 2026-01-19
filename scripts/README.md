@@ -75,22 +75,19 @@ pyinstaller --clean ic256_sampler.spec
 
 ## Automated Builds (GitHub Actions)
 
-The project includes a GitHub Actions workflow (`.github/workflows/build.yml`) that automatically builds Windows executables on:
+The project includes a GitHub Actions workflow (`.github/workflows/build.yml`) for building Windows executables on-demand:
 
-- **Pushes** to `main` or `develop` branches
-- **Pull requests** to `main` or `develop`
-- **Version tags** (e.g., `v1.1.0`)
-- **Manual trigger** via GitHub Actions UI
+- **Manual trigger only**: The workflow runs only when manually triggered to save compute resources for infrequent releases
 
 ### Using GitHub Actions
 
-1. **Automatic builds**: Simply push to `main` or `develop` and the workflow will run automatically
-2. **Download artifacts**: 
-   - Go to the **Actions** tab in GitHub
-   - Select the workflow run
-   - Download the artifact named `ic256-sampler-windows-{version}`
-3. **Manual trigger**: 
+1. **Trigger the build**: 
    - Go to **Actions** → **Build Windows Executable** → **Run workflow**
+   - Select the branch (usually `main`) and click **Run workflow**
+2. **Download artifacts**: 
+   - Wait for the workflow to complete
+   - Click on the completed workflow run
+   - Download the artifact named `ic256-sampler-windows-{version}`
 
 The workflow uses the same build script (`build_exe.ps1`) with `-SkipValidation` flag for faster CI builds.
 

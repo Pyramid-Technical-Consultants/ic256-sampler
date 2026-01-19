@@ -1,17 +1,7 @@
 name: Build Windows Executable
 
 on:
-  push:
-    branches:
-      - main
-      - develop
-    tags:
-      - 'v*.*.*'  # Trigger on version tags like v1.1.0
-  pull_request:
-    branches:
-      - main
-      - develop
-  workflow_dispatch:  # Allow manual triggering
+  workflow_dispatch:  # Manual trigger only - saves compute for infrequent releases
 
 jobs:
   build:
