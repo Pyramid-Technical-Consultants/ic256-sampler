@@ -4,9 +4,9 @@ This directory contains scripts and configuration files for building standalone 
 
 ## Files
 
-- **`build-exe.ps1`** - Enhanced PowerShell script to build Windows executable using PyInstaller
-- **`ic256-sampler.spec`** - PyInstaller specification file for reproducible builds
-- **`BuildForIC256.iss`** - Inno Setup script for creating Windows installer
+- **`build_exe.ps1`** - Enhanced PowerShell script to build Windows executable using PyInstaller
+- **`ic256_sampler.spec`** - PyInstaller specification file for reproducible builds
+- **`build_for_ic256.iss`** - Inno Setup script for creating Windows installer
 - **`logo.ico`** - Application icon used in builds
 
 ## Prerequisites
@@ -42,7 +42,7 @@ This directory contains scripts and configuration files for building standalone 
 
 From the project root:
 ```powershell
-.\setup\build-exe.ps1
+.\scripts\build_exe.ps1
 ```
 
 The script will:
@@ -55,13 +55,13 @@ The script will:
 
 ```powershell
 # Clean build (removes previous builds)
-.\setup\build-exe.ps1 -Clean
+.\scripts\build_exe.ps1 -Clean
 
 # Skip validation checks (faster, less safe)
-.\setup\build-exe.ps1 -SkipValidation
+.\scripts\build_exe.ps1 -SkipValidation
 
 # Combine options
-.\setup\build-exe.ps1 -Clean -SkipValidation
+.\scripts\build_exe.ps1 -Clean -SkipValidation
 ```
 
 The executable will be created in `dist/ic256-sampler.exe`.
@@ -69,8 +69,8 @@ The executable will be created in `dist/ic256-sampler.exe`.
 ### Manual Build with PyInstaller
 
 ```powershell
-cd setup
-pyinstaller --clean ic256-sampler.spec
+cd scripts
+pyinstaller --clean ic256_sampler.spec
 ```
 
 ## Building Installer
@@ -79,10 +79,10 @@ pyinstaller --clean ic256-sampler.spec
 
 2. **Build the installer** with Inno Setup:
    ```powershell
-   iscc setup\BuildForIC256.iss
+   iscc scripts\build_for_ic256.iss
    ```
 
-   Or open `BuildForIC256.iss` in Inno Setup Compiler and click "Build".
+   Or open `build_for_ic256.iss` in Inno Setup Compiler and click "Build".
 
 The installer will be created in `dist/IC256-Sampler-Setup-{version}.exe`.
 
@@ -115,7 +115,7 @@ The build script automatically reads the version from `pyproject.toml`. To updat
 
 ### Spec File Customization
 
-The `ic256-sampler.spec` file contains all PyInstaller configuration:
+The `ic256_sampler.spec` file contains all PyInstaller configuration:
 
 - **`hiddenimports`**: Modules that PyInstaller might miss (e.g., `msgpack`, `PIL`, `websocket`)
 - **`datas`**: Data files to include (images are bundled here)
@@ -140,7 +140,7 @@ Images are automatically bundled from `ic256_sampler/assets/images/` and placed 
 
 **"Spec file not found"**
 - Ensure you're running from the project root
-- Check that `setup/ic256-sampler.spec` exists
+- Check that `scripts/ic256_sampler.spec` exists
 
 ### Executable Issues
 
@@ -150,7 +150,7 @@ Images are automatically bundled from `ic256_sampler/assets/images/` and placed 
 - UPX compression is disabled by default (set `upx=True` in spec if needed)
 
 **"Missing module" errors at runtime**
-- Add the missing module to `hiddenimports` in the spec file
+- Add the missing module to `hiddenimports` in `ic256_sampler.spec`
 - Check PyInstaller build logs for warnings
 - Test on a clean machine to identify missing dependencies
 
@@ -162,7 +162,7 @@ Images are automatically bundled from `ic256_sampler/assets/images/` and placed 
 **Executable crashes on startup**
 - Enable console mode temporarily: set `console=True` in spec file
 - Check Windows Event Viewer for error details
-- Test with: `pyinstaller --debug=all ic256-sampler.spec`
+- Test with: `pyinstaller --debug=all ic256_sampler.spec`
 
 ### Installer Issues
 
@@ -207,7 +207,7 @@ Build time: 12.3 seconds
 
 ### Custom Build Configuration
 
-Edit `ic256-sampler.spec` to customize:
+Edit `ic256_sampler.spec` to customize:
 - Compression settings
 - Included/excluded modules
 - Binary dependencies

@@ -26,10 +26,10 @@ ic256-sampler/
 ├── data/                       # Data output directory (gitignored)
 │   └── *.csv                  # Collected data files
 │
-├── setup/                      # Build scripts and configuration
-│   ├── build-exe.ps1          # PowerShell script for building executables
-│   ├── ic256-sampler.spec     # PyInstaller specification file
-│   ├── BuildForIC256.iss      # Inno Setup installer script
+├── scripts/                    # Build scripts and tools (standard Python convention)
+│   ├── build_exe.ps1          # PowerShell script for building executables
+│   ├── ic256_sampler.spec     # PyInstaller specification file
+│   ├── build_for_ic256.iss    # Inno Setup installer script
 │   ├── logo.ico               # Application icon
 │   └── README.md              # Build instructions
 │

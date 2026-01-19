@@ -9,10 +9,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Get script directory (setup/)
+# Get script directory (scripts/)
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
-$SpecFile = Join-Path $ScriptDir "ic256-sampler.spec"
+$SpecFile = Join-Path $ScriptDir "ic256_sampler.spec"
 $DistDir = Join-Path $ProjectRoot "dist"
 $BuildDir = Join-Path $ProjectRoot "build"
 $PyProjectFile = Join-Path $ProjectRoot "pyproject.toml"
@@ -71,7 +71,7 @@ if (-not $SkipValidation) {
     # Check spec file
     if (-not (Test-Path $SpecFile)) {
         Write-Host "  ERROR: Spec file not found: $SpecFile" -ForegroundColor Red
-        Write-Host "  Please ensure ic256-sampler.spec exists in the setup directory" -ForegroundColor Red
+        Write-Host "  Please ensure ic256_sampler.spec exists in the scripts directory" -ForegroundColor Red
         exit 1
     }
     Write-Host "  Spec file: Found" -ForegroundColor Green
@@ -146,7 +146,7 @@ if ($buildExitCode -eq 0) {
         Write-Host ""
         Write-Host "Next steps:" -ForegroundColor Yellow
         Write-Host "  1. Test the executable: & '$ExePath'" -ForegroundColor Gray
-        Write-Host "  2. Build installer: iscc setup\BuildForIC256.iss" -ForegroundColor Gray
+        Write-Host "  2. Build installer: iscc scripts\build_for_ic256.iss" -ForegroundColor Gray
     } else {
         Write-Host "========================================" -ForegroundColor Red
         Write-Host "  Build Error!" -ForegroundColor Red
@@ -165,7 +165,7 @@ if ($buildExitCode -eq 0) {
     Write-Host ""
     Write-Host "Common issues:" -ForegroundColor Yellow
     Write-Host "  - Missing dependencies: pip install -r requirements.txt" -ForegroundColor Gray
-    Write-Host "  - Missing hidden imports: check ic256-sampler.spec" -ForegroundColor Gray
+    Write-Host "  - Missing hidden imports: check ic256_sampler.spec" -ForegroundColor Gray
     Write-Host "  - Path issues: ensure all paths in spec file are correct" -ForegroundColor Gray
     exit 1
 }

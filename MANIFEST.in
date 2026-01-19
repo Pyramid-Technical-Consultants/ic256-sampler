@@ -13,8 +13,8 @@ include pyproject.toml
 include requirements.txt
 
 # Include build scripts (for reference, not installed)
-recursive-include setup *
-prune setup
+recursive-include scripts *
+prune scripts
 
 # Exclude common unwanted files
 global-exclude *.pyc

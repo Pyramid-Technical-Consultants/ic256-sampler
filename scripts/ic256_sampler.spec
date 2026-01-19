@@ -8,7 +8,7 @@
 import sys
 from pathlib import Path
 
-# Get project root (parent of setup directory)
+# Get project root (parent of scripts directory)
 project_root = Path(SPECPATH).parent
 package_dir = project_root / "ic256_sampler"
 assets_dir = package_dir / "assets" / "images"

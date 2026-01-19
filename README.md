@@ -101,9 +101,9 @@ ic256-sampler/
 ├── tests/                 # Test suite (pytest)
 │   ├── unit/             # Unit tests
 │   └── integration/     # Integration tests
-├── setup/                 # Build scripts and tools
-│   ├── build-exe.ps1     # PyInstaller build script
-│   └── BuildForIC256.iss # Inno Setup installer script
+├── scripts/               # Build scripts and tools
+│   ├── build_exe.ps1     # PyInstaller build script
+│   └── build_for_ic256.iss # Inno Setup installer script
 ├── data/                  # Data output directory (gitignored)
 ├── pyproject.toml        # Modern Python project config (PEP 518/621)
 ├── requirements.txt      # Python dependencies
@@ -179,10 +179,10 @@ This project uses:
 
 The project includes setup scripts for building standalone executables:
 
-- **Windows**: Use `setup/build-exe.ps1` (PowerShell script)
-- **Inno Setup**: Use `setup/BuildForIC256.iss` for Windows installer
+- **Windows**: Use `scripts/build_exe.ps1` (PowerShell script)
+- **Inno Setup**: Use `scripts/build_for_ic256.iss` for Windows installer
 
-See `setup/README.md` for detailed build instructions.
+See `scripts/README.md` for detailed build instructions.
 
 ## License
 

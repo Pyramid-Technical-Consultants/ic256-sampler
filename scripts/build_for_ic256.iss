@@ -1,7 +1,7 @@
 ; Inno Setup script for IC256 Sampler
 ; Creates a Windows installer for the application
 ;
-; To build: iscc setup\BuildForIC256.iss
+; To build: iscc scripts\build_for_ic256.iss
 ; Or open this file in Inno Setup Compiler and click "Build"
 
 #define AppName "IC256 Sampler"
@@ -107,7 +107,7 @@ begin
   begin
     MsgBox('Executable not found: ' + ExePath + #13#10 + #13#10 + 
            'Please build the executable first using:' + #13#10 +
-           '  .\setup\build-exe.ps1', mbError, MB_OK);
+           '  .\scripts\build_exe.ps1', mbError, MB_OK);
     Result := False;
   end
   else
