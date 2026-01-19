@@ -22,7 +22,10 @@
 #define AppPublisher "Pyramid Technical Consultants, Inc."
 #define AppURL "https://github.com/Pyramid-Technical-Consultants/ic256-sampler"
 #define AppExeName "ic256-sampler.exe"
-#define AppId "{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"
+; AppId: Unique GUID for Windows installer identification
+; Generate new GUIDs with: python -c "import uuid; print(str(uuid.uuid4()).upper())"
+; Or PowerShell: [guid]::NewGuid()
+#define AppId "{903DA095-1DB6-4F97-A2BC-B64CCE65051D}"
 
 [Setup]
 ; App identification
