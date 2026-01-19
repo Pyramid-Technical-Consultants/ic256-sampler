@@ -64,7 +64,6 @@ a = Analysis(
         "csv",
         "bisect",
         "collections",
-        "collections.abc",
         "ipaddress",
         "datetime",
         "tempfile",
