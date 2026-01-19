@@ -31,6 +31,9 @@ MANIFEST
 # Note: scripts/ic256_sampler.spec should be tracked for reproducible builds
 !scripts/*.spec
 
+# Generated version file (auto-generated from pyproject.toml)
+scripts/version.iss
+
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt

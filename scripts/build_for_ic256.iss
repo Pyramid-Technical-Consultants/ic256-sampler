@@ -3,10 +3,23 @@
 ;
 ; To build: iscc scripts\build_for_ic256.iss
 ; Or open this file in Inno Setup Compiler and click "Build"
+;
+; Note: AppVersion is automatically generated from pyproject.toml by build_exe.ps1
+; The version.iss file is created when you run build_exe.ps1
+; If building manually without build_exe.ps1, uncomment the line below and set version:
+; #define AppVersion "1.0.0"
+
+; Include version from generated file (created by build_exe.ps1)
+; Fallback to default if file doesn't exist (for manual builds)
+#ifndef AppVersion
+  #include "version.iss"
+  #ifndef AppVersion
+    #define AppVersion "1.0.0"  ; Fallback if version.iss doesn't exist
+  #endif
+#endif
 
 #define AppName "IC256 Sampler"
-#define AppVersion "1.0.0"
-#define AppPublisher "IC256 Sampler Team"
+#define AppPublisher "Pyramid Technical Consultants, Inc."
 #define AppURL "https://github.com/Pyramid-Technical-Consultants/ic256-sampler"
 #define AppExeName "ic256-sampler.exe"
 #define AppId "{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"

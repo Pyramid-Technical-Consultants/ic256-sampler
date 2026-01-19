@@ -99,6 +99,9 @@ if (-not $SkipValidation) {
     }
     Write-Host "  Entry point: Found" -ForegroundColor Green
     
+    # Display version that will be used
+    Write-Host "  Version: $Version (from pyproject.toml)" -ForegroundColor Green
+    
     Write-Host "Validation complete!" -ForegroundColor Green
     Write-Host ""
 }
@@ -144,6 +147,11 @@ if ($buildExitCode -eq 0) {
         Write-Host "Size: $exeSizeMB MB ($exeSizeKB KB)" -ForegroundColor Cyan
         Write-Host "Build time: $($buildDuration.TotalSeconds.ToString('F1')) seconds" -ForegroundColor Cyan
         Write-Host ""
+        # Generate version file for Inno Setup
+        $VersionFile = Join-Path $ScriptDir "version.iss"
+        "#define AppVersion `"$Version`"" | Out-File -FilePath $VersionFile -Encoding ASCII
+        Write-Host "  Generated: $VersionFile" -ForegroundColor Gray
+        
         Write-Host "Next steps:" -ForegroundColor Yellow
         Write-Host "  1. Test the executable: & '$ExePath'" -ForegroundColor Gray
         Write-Host "  2. Build installer: iscc scripts\build_for_ic256.iss" -ForegroundColor Gray

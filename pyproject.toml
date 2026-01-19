@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "MIT"}
 authors = [
-    {name = "IC256 Sampler Team"}
+    {name = "Pyramid Technical Consultants, Inc."}
 ]
 keywords = ["data-collection", "ic256", "tx2", "measurement"]
 classifiers = [
