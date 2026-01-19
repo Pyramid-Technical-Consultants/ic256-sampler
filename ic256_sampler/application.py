@@ -730,7 +730,9 @@ class Application:
         self._register_cleanup()
         
         try:
-            self.window = GUI("IC256 Sampler")
+            from . import __version__
+            app_title = f"IC256 Sampler v{__version__}"
+            self.window = GUI(app_title)
 
             # Override GUI methods with our implementations
             self.window.start = self.start_collection

@@ -64,7 +64,7 @@ The script will:
 .\scripts\build_exe.ps1 -Clean -SkipValidation
 ```
 
-The executable will be created in `dist/ic256-sampler.exe`.
+The executable will be created as `dist/ic256-sampler-{version}.exe` (e.g., `dist/ic256-sampler-1.0.0.exe`).
 
 ### Manual Build with PyInstaller
 
@@ -224,10 +224,12 @@ Example output:
 ========================================
   Build Successful!
 ========================================
-Executable: C:\...\dist\ic256-sampler.exe
+Executable: C:\...\dist\ic256-sampler-1.0.0.exe
 Size: 45.23 MB (46356 KB)
 Build time: 12.3 seconds
 ```
+
+**Note**: The executable is automatically renamed to include the version number (e.g., `ic256-sampler-1.0.0.exe`). The GUI window title will also display the version (e.g., "IC256 Sampler v1.0.0").
 
 ## Advanced Usage
 

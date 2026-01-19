@@ -180,6 +180,8 @@ This project uses:
 The project includes setup scripts for building standalone executables:
 
 - **Windows**: Use `scripts/build_exe.ps1` (PowerShell script)
+  - Creates versioned executable: `dist/ic256-sampler-{version}.exe`
+  - GUI window title includes version: "IC256 Sampler v{version}"
 - **Inno Setup**: Use `scripts/build_for_ic256.iss` for Windows installer
 
 See `scripts/README.md` for detailed build instructions.

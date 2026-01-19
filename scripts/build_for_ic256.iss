@@ -92,8 +92,8 @@ Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescrip
 Name: "{app}\Data"; Permissions: users-full
 
 [Files]
-; Main executable
-Source: "..\dist\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion; Permissions: users-full; Check: FileExists(ExpandConstant('..\dist\{#AppExeName}'))
+; Main executable (versioned name)
+Source: "..\dist\ic256-sampler-{#AppVersion}.exe"; DestDir: "{app}"; DestName: "{#AppExeName}"; Flags: ignoreversion; Permissions: users-full; Check: FileExists(ExpandConstant('..\dist\ic256-sampler-{#AppVersion}.exe'))
 ; Icon file
 Source: "logo.ico"; DestDir: "{app}"; Flags: ignoreversion
 
@@ -118,16 +118,21 @@ function InitializeSetup(): Boolean;
 var
   ExePath: String;
 begin
-  ExePath := ExpandConstant('..\dist\{#AppExeName}');
+  // Check for versioned executable name
+  ExePath := ExpandConstant('..\dist\ic256-sampler-{#AppVersion}.exe');
   if not FileExists(ExePath) then
   begin
-    MsgBox('Executable not found: ' + ExePath + #13#10 + #13#10 + 
-           'Please build the executable first using:' + #13#10 +
-           '  .\scripts\build_exe.ps1', mbError, MB_OK);
-    Result := False;
-  end
-  else
-  begin
-    Result := True;
+    // Fallback to non-versioned name (for backwards compatibility)
+    ExePath := ExpandConstant('..\dist\{#AppExeName}');
+    if not FileExists(ExePath) then
+    begin
+      MsgBox('Executable not found. Expected:' + #13#10 +
+             '  ..\dist\ic256-sampler-{#AppVersion}.exe' + #13#10 + #13#10 +
+             'Please build the executable first using:' + #13#10 +
+             '  .\scripts\build_exe.ps1', mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
   end;
+  Result := True;
 end;

@@ -134,16 +134,23 @@ $buildDuration = (Get-Date) - $buildStartTime
 Write-Host ""
 
 if ($buildExitCode -eq 0) {
-    $ExePath = Join-Path $DistDir "ic256-sampler.exe"
-    if (Test-Path $ExePath) {
-        $exeInfo = Get-Item $ExePath
+    $BaseExePath = Join-Path $DistDir "ic256-sampler.exe"
+    $VersionedExeName = "ic256-sampler-$Version.exe"
+    $VersionedExePath = Join-Path $DistDir $VersionedExeName
+    
+    if (Test-Path $BaseExePath) {
+        # Rename executable to include version
+        Rename-Item -Path $BaseExePath -NewName $VersionedExeName -Force
+        Write-Host "  Renamed executable to include version" -ForegroundColor Gray
+        
+        $exeInfo = Get-Item $VersionedExePath
         $exeSizeMB = [math]::Round($exeInfo.Length / 1MB, 2)
         $exeSizeKB = [math]::Round($exeInfo.Length / 1KB, 0)
         
         Write-Host "========================================" -ForegroundColor Green
         Write-Host "  Build Successful!" -ForegroundColor Green
         Write-Host "========================================" -ForegroundColor Green
-        Write-Host "Executable: $ExePath" -ForegroundColor Cyan
+        Write-Host "Executable: $VersionedExePath" -ForegroundColor Cyan
         Write-Host "Size: $exeSizeMB MB ($exeSizeKB KB)" -ForegroundColor Cyan
         Write-Host "Build time: $($buildDuration.TotalSeconds.ToString('F1')) seconds" -ForegroundColor Cyan
         Write-Host ""
@@ -153,14 +160,14 @@ if ($buildExitCode -eq 0) {
         Write-Host "  Generated: $VersionFile" -ForegroundColor Gray
         
         Write-Host "Next steps:" -ForegroundColor Yellow
-        Write-Host "  1. Test the executable: & '$ExePath'" -ForegroundColor Gray
+        Write-Host "  1. Test the executable: & '$VersionedExePath'" -ForegroundColor Gray
         Write-Host "  2. Build installer: iscc scripts\build_for_ic256.iss" -ForegroundColor Gray
     } else {
         Write-Host "========================================" -ForegroundColor Red
         Write-Host "  Build Error!" -ForegroundColor Red
         Write-Host "========================================" -ForegroundColor Red
         Write-Host "Build completed but executable not found at:" -ForegroundColor Red
-        Write-Host "  $ExePath" -ForegroundColor Yellow
+        Write-Host "  $BaseExePath" -ForegroundColor Yellow
         Write-Host ""
         Write-Host "Check PyInstaller output above for errors." -ForegroundColor Yellow
         exit 1
