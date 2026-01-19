@@ -178,6 +178,10 @@ The project includes a GitHub Actions workflow for building Windows executables 
 
 **Note**: The workflow is manual-only to save compute resources for infrequent releases.
 
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for a detailed list of changes in each version.
+
 ## License
 
 See LICENSE file for details.
