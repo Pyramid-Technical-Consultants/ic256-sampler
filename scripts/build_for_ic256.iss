@@ -7,14 +7,14 @@
 ; Note: AppVersion is automatically generated from pyproject.toml by build_exe.ps1
 ; The version.iss file is created when you run build_exe.ps1
 ; If building manually without build_exe.ps1, uncomment the line below and set version:
-; #define AppVersion "1.0.0"
+; #define AppVersion "1.1.0"
 
 ; Include version from generated file (created by build_exe.ps1)
 ; Fallback to default if file doesn't exist (for manual builds)
 #ifndef AppVersion
   #include "version.iss"
   #ifndef AppVersion
-    #define AppVersion "1.0.0"  ; Fallback if version.iss doesn't exist
+    #define AppVersion "1.1.0"  ; Fallback if version.iss doesn't exist
   #endif
 #endif
 

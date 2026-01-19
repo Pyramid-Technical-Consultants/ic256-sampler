@@ -1,0 +1,85 @@
+name: Build Windows Executable
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    tags:
+      - 'v*.*.*'  # Trigger on version tags like v1.1.0
+  pull_request:
+    branches:
+      - main
+      - develop
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  build:
+    name: Build Windows Executable
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'  # Use a stable Python version
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+      
+      - name: Get version from pyproject.toml
+        id: get_version
+        shell: pwsh
+        run: |
+          $content = Get-Content "pyproject.toml" -Raw
+          if ($content -match 'version\s*=\s*"([^"]+)"') {
+            $version = $matches[1]
+            Write-Host "Version: $version"
+            Write-Output "version=$version" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Error "Could not extract version from pyproject.toml"
+            exit 1
+          }
+      
+      - name: Build executable
+        shell: pwsh
+        run: |
+          .\scripts\build_exe.ps1 -SkipValidation
+      
+      - name: Verify executable exists
+        shell: pwsh
+        run: |
+          $version = "${{ steps.get_version.outputs.version }}"
+          $exePath = "dist\ic256-sampler-$version.exe"
+          if (-not (Test-Path $exePath)) {
+            Write-Error "Executable not found: $exePath"
+            Get-ChildItem -Path dist -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "Found: $($_.Name)" }
+            exit 1
+          }
+          Write-Host "Executable found: $exePath"
+          $fileInfo = Get-Item $exePath
+          Write-Host "File size: $([math]::Round($fileInfo.Length / 1MB, 2)) MB"
+      
+      - name: Upload executable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ic256-sampler-windows-${{ steps.get_version.outputs.version }}
+          path: dist/ic256-sampler-${{ steps.get_version.outputs.version }}.exe
+          retention-days: 90
+      
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            build/
+            dist/
+          retention-days: 7

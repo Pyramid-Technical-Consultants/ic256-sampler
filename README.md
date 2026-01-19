@@ -1,5 +1,7 @@
 # IC256 Sampler
 
+[![Build Windows Executable](https://github.com/Pyramid-Technical-Consultants/ic256-sampler/actions/workflows/build.yml/badge.svg)](https://github.com/Pyramid-Technical-Consultants/ic256-sampler/actions/workflows/build.yml)
+
 A modern Python application for collecting and managing data from IC256 and TX2 measurement devices.
 
 ## Features
@@ -24,7 +26,7 @@ A modern Python application for collecting and managing data from IC256 and TX2 
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/ic256-sampler.git
+git clone https://github.com/Pyramid-Technical-Consultants/ic256-sampler.git
 cd ic256-sampler
 ```
 
@@ -185,6 +187,23 @@ The project includes setup scripts for building standalone executables:
 - **Inno Setup**: Use `scripts/build_for_ic256.iss` for Windows installer
 
 See `scripts/README.md` for detailed build instructions.
+
+### Automated Builds (GitHub Actions)
+
+The project includes a GitHub Actions workflow that automatically builds Windows executables:
+
+- **Triggers**: 
+  - Pushes to `main` or `develop` branches
+  - Pull requests to `main` or `develop`
+  - Version tags (e.g., `v1.1.0`)
+  - Manual workflow dispatch
+- **Artifacts**: Built executables are available as downloadable artifacts in the Actions tab
+- **Workflow file**: `.github/workflows/build.yml`
+
+To download a built executable:
+1. Go to the **Actions** tab in GitHub
+2. Select the workflow run
+3. Download the artifact named `ic256-sampler-windows-{version}`
 
 ## License
 

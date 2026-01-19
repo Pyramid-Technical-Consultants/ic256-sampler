@@ -27,7 +27,7 @@ function Get-VersionFromPyProject {
             return $matches[1]
         }
     }
-    return "1.0.0"
+    return "1.1.0"  # Fallback if pyproject.toml not found
 }
 
 # Get version

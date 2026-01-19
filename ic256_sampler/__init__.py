@@ -41,7 +41,7 @@ def _get_version() -> str:
         except Exception:
             pass
     
-    return "0.0.0"  # Fallback if nothing found
+    return "1.1.0"  # Fallback if nothing found (should match pyproject.toml)
 
 
 __version__ = _get_version()
