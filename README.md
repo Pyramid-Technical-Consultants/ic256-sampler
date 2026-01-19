@@ -50,12 +50,19 @@ pip install -e .
 
 ### Running the Application
 
-```bash
-ic256-sampler
-```
+After installation, you can run the application in several ways:
 
-Or run directly:
 ```bash
+# Using the entry point (recommended after installation)
+ic256-sampler
+
+# As a Python module (standard way)
+python -m ic256_sampler
+
+# Direct script execution (development)
+python run.py
+
+# Using the main module directly
 python -m ic256_sampler.main
 ```
 
@@ -89,56 +96,39 @@ This project follows standard Python packaging conventions (PEP 518/621):
 
 ```
 ic256-sampler/
-├── ic256_sampler/          # Main Python package (snake_case)
-│   ├── __init__.py        # Package initialization
-│   ├── __main__.py        # Module entry point (python -m ic256_sampler)
-│   ├── main.py            # Application entry point
-│   ├── application.py     # Main application class
-│   ├── config.py          # Configuration management
-│   ├── utils.py           # Utility functions
-│   ├── igx_client.py      # WebSocket client
-│   ├── device_paths.py    # Device path configuration
+├── ic256_sampler/          # Main Python package
+│   ├── __init__.py         # Package initialization
+│   ├── __main__.py         # Module entry point (python -m ic256_sampler)
+│   ├── main.py             # Application entry point
+│   ├── application.py      # Main application class
+│   ├── config.py           # Configuration management
+│   ├── utils.py            # Utility functions
+│   ├── igx_client.py       # WebSocket client
+│   ├── device_paths.py     # Device path configuration
 │   └── assets/
-│       └── images/        # Application images
-├── tests/                 # Test suite (pytest)
-│   ├── unit/             # Unit tests
-│   └── integration/     # Integration tests
-├── scripts/               # Build scripts and tools
-│   ├── build_exe.ps1     # PyInstaller build script
+│       └── images/         # Application images
+├── tests/                  # Test suite (pytest)
+│   ├── unit/               # Unit tests
+│   └── integration/        # Integration tests
+├── scripts/                # Build scripts and tools
+│   ├── build_exe.ps1       # PyInstaller build script
 │   └── build_for_ic256.iss # Inno Setup installer script
-├── data/                  # Data output directory (gitignored)
-├── pyproject.toml        # Modern Python project config (PEP 518/621)
-├── requirements.txt      # Python dependencies
-├── MANIFEST.in          # Package data inclusion rules
-├── README.md            # This file
-└── LICENSE              # License file
-```
-
-### Running the Application
-
-Standard Python ways to run the application:
-
-```bash
-# After installation (recommended)
-pip install -e .
-ic256-sampler
-
-# As a Python module (standard way)
-python -m ic256_sampler
-
-# Direct script execution (development)
-python run.py
-
-# Or using the entry point script
-python -m ic256_sampler.main
+├── data/                   # Data output directory (gitignored)
+├── pyproject.toml          # Modern Python project config (PEP 518/621)
+├── requirements.txt        # Python dependencies
+├── MANIFEST.in             # Package data inclusion rules
+├── README.md               # This file
+└── LICENSE                 # License file
 ```
 
 ## Development
 
 ### Setting Up Development Environment
 
-1. Create a virtual environment (recommended):
+1. Clone the repository and create a virtual environment:
 ```bash
+git clone https://github.com/Pyramid-Technical-Consultants/ic256-sampler.git
+cd ic256-sampler
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
@@ -148,60 +138,45 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -e ".[dev]"
 ```
 
-3. Run tests:
-```bash
-pytest                    # All tests
-pytest tests/unit/       # Unit tests only
-pytest -m "not integration"  # Skip integration tests
-```
+### Development Tools
 
-4. Run linting:
-```bash
-ruff check .
-```
+- **Testing**: Run tests with `pytest`
+  ```bash
+  pytest                    # All tests
+  pytest tests/unit/       # Unit tests only
+  pytest -m "not integration"  # Skip integration tests
+  ```
 
-5. Format code:
-```bash
-ruff format .
-```
+- **Linting**: Check code quality with `ruff check .`
 
-6. Type checking (optional):
-```bash
-mypy ic256_sampler
-```
+- **Formatting**: Format code with `ruff format .`
 
-### Code Style
-
-This project uses:
-- **Ruff** for linting and formatting
-- **mypy** for type checking (optional)
-- **pytest** for testing
+- **Type Checking**: Optional type checking with `mypy ic256_sampler`
 
 ## Building Executables
 
-The project includes setup scripts for building standalone executables:
+### Local Build
 
-- **Windows**: Use `scripts/build_exe.ps1` (PowerShell script)
+Build standalone Windows executables using the provided scripts:
+
+- **Executable**: Use `scripts/build_exe.ps1` (PowerShell script)
   - Creates versioned executable: `dist/ic256-sampler-{version}.exe`
   - GUI window title includes version: "IC256 Sampler v{version}"
-- **Inno Setup**: Use `scripts/build_for_ic256.iss` for Windows installer
+- **Installer**: Use `scripts/build_for_ic256.iss` for Windows installer
 
 See `scripts/README.md` for detailed build instructions.
 
-### Automated Builds (GitHub Actions)
+### GitHub Actions Build
 
 The project includes a GitHub Actions workflow for building Windows executables on-demand:
 
-- **Manual trigger only**: The workflow runs only when manually triggered to save compute resources
-- **Artifacts**: Built executables are available as downloadable artifacts in the Actions tab
-- **Workflow file**: `.github/workflows/build.yml`
-
-To build and download an executable:
 1. Go to the **Actions** tab in GitHub
 2. Select **Build Windows Executable** from the workflow list
 3. Click **Run workflow** and select the branch (usually `main`)
 4. Wait for the workflow to complete
 5. Download the artifact named `ic256-sampler-windows-{version}`
+
+**Note**: The workflow is manual-only to save compute resources for infrequent releases.
 
 ## License
 
@@ -211,6 +186,12 @@ See LICENSE file for details.
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
+## Security
+
+For security vulnerabilities, please see [SECURITY.md](SECURITY.md) for our security policy and reporting process.
+
+**Important**: This software is NOT intended for use in safety-critical applications.
+
 ## Support
 
-For issues and questions, please open an issue on GitHub.
+For issues and questions, please open an issue on [GitHub](https://github.com/Pyramid-Technical-Consultants/ic256-sampler/issues).
